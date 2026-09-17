@@ -1,0 +1,9 @@
+# AON ULP: allow the attention app to talk to the vendor AON camera HAL
+allow untrusted_app hal_camera_default binder call
+allow untrusted_app hal_camera_default binder transfer
+allow untrusted_app hal_camera_default fd use
+allow untrusted_app hal_camera_default service_manager find
+allow untrusted_app vendor_hal_camera_aon_service service_manager find
+allow hal_camera_default untrusted_app binder call
+allow hal_camera_default untrusted_app binder transfer
+allow hal_camera_default untrusted_app fd use

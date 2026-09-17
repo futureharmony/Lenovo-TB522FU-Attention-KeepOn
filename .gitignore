@@ -1,0 +1,21 @@
+# Build toolchain & artifacts
+app/tools/
+app/build/
+*.zip
+
+# Signing key (keep local; back up separately)
+app/aon_release.keystore
+
+# Analysis working directory (local only, not for VCS)
+WorkBuddyKeyReuslt/
+
+# WorkBuddy runtime data
+.workbuddy/
+
+# Dumps & logs
+cam_dump.txt
+*.log
+
+# OS noise
+.DS_Store
+__MACOSX/

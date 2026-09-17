@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="futureharmony.tb522fu.aon"
+    android:versionCode="16000018"
+    android:versionName="2.6-headless">
+
+    <uses-sdk android:minSdkVersion="31" android:targetSdkVersion="36"/>
+
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"/>
+    <uses-permission android:name="android.permission.DEVICE_POWER"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <uses-feature android:name="android.hardware.camera.front" android:required="true"/>
+
+    <application
+        android:label="TB522FU AON"
+        android:hasCode="true" android:extractNativeLibs="true"
+        android:defaultToDeviceProtectedStorage="true"
+        android:directBootAware="true">
+
+        <!-- 纯后台服务：无任何界面组件、非 Xposed 模块。
+             framework 通过 attention_service_component 绑定本服务（Demand Mode 契约）。 -->
+        <service
+            android:name="futureharmony.tb522fu.aon.AONAttentionService"
+            android:foregroundServiceType="specialUse"
+            android:exported="true"
+            android:process=":attention"
+            android:directBootAware="true">
+            <intent-filter>
+                <action android:name="android.service.attention.AttentionService"/>
+            </intent-filter>
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Headless AttentionService bound by framework; keeps AON HAL IPC process alive"/>
+        </service>
+    </application>
+</manifest>

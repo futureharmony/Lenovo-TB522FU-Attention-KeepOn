@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>注视不熄屏控制台</title>
+    <style>
+        :root {
+            --bg: #0b0d13;
+            --surface: #141722;
+            --surface-hover: #1c2130;
+            --surface-2: #10131a;
+            --border: #232a3d;
+            --text-primary: #f3f4f6;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --emerald: #10b981;
+            --emerald-glow: rgba(16, 185, 129, 0.15);
+            --amber: #f59e0b;
+            --blue: #5b8def;
+            --rose: #f43f5e;
+            --radius-sm: 6px;
+            --radius-md: 10px;
+            --radius-lg: 14px;
+            --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+        html, body { height: 100%; }
+
+        body {
+            background-color: var(--bg);
+            color: var(--text-primary);
+            font-family: var(--font-sans);
+            /* 单屏布局：整页永不滚动，日志区吃掉剩余空间 */
+            height: 100dvh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding: 10px 12px calc(8px + env(safe-area-inset-bottom));
+            font-size: 13px;
+        }
+
+        /* ── header：单行 ── */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex: 0 0 auto;
+        }
+        .brand-title { font-size: 15px; font-weight: 700; letter-spacing: -0.02em; }
+        .brand-subtitle { font-size: 10.5px; color: var(--text-muted); }
+
+        .badge {
+            display: inline-flex; align-items: center; gap: 5px;
+            padding: 3px 10px; border-radius: 9999px;
+            font-size: 11.5px; font-weight: 600;
+            background: var(--surface); border: 1px solid var(--border);
+            white-space: nowrap;
+        }
+        .badge-dot { width: 7px; height: 7px; border-radius: 50%; background-color: var(--text-muted); }
+        .badge-active { color: var(--emerald); border-color: var(--emerald); background: var(--emerald-glow); }
+        .badge-active .badge-dot { background-color: var(--emerald); }
+        .badge-warn { color: var(--amber); border-color: var(--amber); }
+        .badge-warn .badge-dot { background-color: var(--amber); }
+
+        /* ── 主开关条：开关 + 状态 chips 同行 ── */
+        .hero {
+            flex: 0 0 auto;
+            display: flex; align-items: center; gap: 10px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 8px 14px;
+            flex-wrap: wrap;
+        }
+        .hero-title { font-size: 13.5px; font-weight: 700; white-space: nowrap; }
+        .hero-desc { font-size: 10.5px; color: var(--text-muted); }
+        .hero .spacer { flex: 1; }
+
+        .chip {
+            display: inline-flex; align-items: center; gap: 4px;
+            font-size: 10.5px; color: var(--text-secondary);
+            background: var(--surface-2); border: 1px solid var(--border);
+            border-radius: 9999px; padding: 3px 9px;
+            white-space: nowrap; font-family: var(--font-mono);
+        }
+        .chip b { color: var(--text-primary); font-weight: 600; }
+        .chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted); }
+        .chip.on .dot { background: var(--emerald); }
+        .chip.on b { color: var(--emerald); }
+
+        /* ── 三栏主区 ── */
+        .layout {
+            flex: 1 1 auto; min-height: 0;
+            display: grid; gap: 8px;
+            grid-template-columns: 1fr;
+            grid-template-rows: auto auto 1fr;
+        }
+        @media (orientation: landscape) {
+            .layout {
+                grid-template-columns: 1fr 1fr 1.1fr;
+                grid-template-rows: 1fr;
+            }
+        }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 10px 12px;
+            display: flex; flex-direction: column; gap: 2px;
+            min-height: 0; overflow-y: auto;
+        }
+        .card-title { font-size: 12.5px; font-weight: 700; color: var(--text-secondary); margin-bottom: 2px; flex: 0 0 auto; }
+        .card-desc { font-size: 10.5px; color: var(--text-muted); }
+
+        /* rows */
+        .row {
+            display: flex; justify-content: space-between; align-items: center;
+            gap: 10px; padding: 7px 0;
+            flex: 0 0 auto;
+        }
+        .row + .row { border-top: 1px solid var(--border); }
+        .row-label { font-size: 12.5px; }
+        .row-hint { font-size: 10.5px; color: var(--text-muted); margin-top: 1px; }
+        .row-ctrl { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+        /* toggle */
+        .switch-wrapper { position: relative; width: 46px; height: 26px; flex-shrink: 0; cursor: pointer; }
+        .switch-input { opacity: 0; width: 0; height: 0; }
+        .switch-slider {
+            position: absolute; cursor: pointer; inset: 0;
+            background-color: var(--border); transition: .2s ease-in-out;
+            border-radius: 26px;
+        }
+        .switch-slider:before {
+            position: absolute; content: ""; height: 20px; width: 20px;
+            left: 3px; top: 3px; background-color: #fff;
+            transition: .2s ease-in-out; border-radius: 50%;
+        }
+        .switch-input:checked + .switch-slider { background-color: var(--emerald); }
+        .switch-input:checked + .switch-slider:before { transform: translateX(20px); }
+        .switch-input:checked + .switch-slider.danger { background-color: var(--rose); }
+
+        input[type="range"] { width: 110px; accent-color: var(--blue); height: 20px; }
+        .range-val { font-size: 11px; color: var(--text-secondary); min-width: 48px; text-align: right; font-family: var(--font-mono); }
+
+        .btn {
+            display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+            padding: 6px 12px; font-size: 11.5px; font-weight: 600;
+            border-radius: var(--radius-sm); border: 1px solid var(--border);
+            background: var(--surface-hover); color: var(--text-primary);
+            cursor: pointer; transition: all 0.15s ease; white-space: nowrap;
+        }
+        .btn:active { transform: scale(0.98); }
+        .btn-primary { background: var(--blue); color: #fff; border-color: var(--blue); }
+        .btn:disabled { opacity: 0.5; cursor: wait; }
+
+        .test-line { font-size: 11px; color: var(--text-secondary); font-family: var(--font-mono); padding-top: 4px; display: none; }
+        .test-line b { color: var(--emerald); }
+
+        .param-grid {
+            display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px;
+            margin: 6px 0 8px;
+        }
+        .param-grid .p { display: flex; flex-direction: column; gap: 2px; }
+        .param-grid label { font-size: 9.5px; color: var(--text-muted); font-family: var(--font-mono); }
+        .param-grid input {
+            width: 100%; min-width: 0; background: var(--surface-2); color: var(--text-primary);
+            border: 1px solid var(--border); border-radius: var(--radius-sm);
+            padding: 5px 6px; font-size: 11.5px; font-family: var(--font-mono); outline: none;
+        }
+
+        /* log */
+        .log-card { min-height: 160px; }
+        .log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex: 0 0 auto; }
+        .log-actions { display: flex; gap: 6px; align-items: center; }
+        .log-actions label { display: flex; align-items: center; gap: 4px; font-size: 10.5px; color: var(--text-secondary); }
+        .log-box {
+            background: #06070a; color: #cbd5e1;
+            font-family: var(--font-mono); font-size: 10px; line-height: 1.45;
+            padding: 8px; border-radius: var(--radius-md);
+            border: 1px solid var(--border);
+            flex: 1 1 auto; min-height: 0;
+            overflow-y: auto;
+            white-space: pre-wrap; word-break: break-all;
+        }
+        .log-line-status { color: #34d399; }
+        .log-line-test { color: #fbbf24; }
+        .log-line-system { color: #38bdf8; }
+        .log-line-warn { color: #fb7185; }
+
+        #toast {
+            position: fixed; bottom: 20px; left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: rgba(15, 23, 42, 0.95); color: #fff;
+            padding: 8px 18px; border-radius: 9999px;
+            font-size: 12px; font-weight: 500;
+            border: 1px solid rgba(255,255,255,0.1);
+            transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+            pointer-events: none; z-index: 9999; max-width: 85vw;
+        }
+        #toast.show { transform: translateX(-50%) translateY(0); }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div>
+            <div class="brand-title">👁️ 注视不熄屏</div>
+            <div class="brand-subtitle">TB522FU · Camera 3 AON · Demand Mode</div>
+        </div>
+        <div id="service-badge" class="badge">
+            <span class="badge-dot"></span>
+            <span id="badge-text">检查状态...</span>
+        </div>
+    </header>
+
+    <!-- 主开关 + 状态 chips：单行 -->
+    <div class="hero">
+        <span class="hero-title">注视保护</span>
+        <label class="switch-wrapper">
+            <input type="checkbox" id="master-toggle" class="switch-input" onchange="onToggleChange(this.checked)">
+            <span class="switch-slider"></span>
+        </label>
+        <span class="hero-desc">按需判定 · 注视续亮 · 平时零功耗</span>
+        <span class="spacer"></span>
+        <span class="chip" id="chip-svc" title="后台服务"><span class="dot"></span>服务 <b id="chip-svc-v">-</b></span>
+        <span class="chip" id="chip-stream" title="AON 流注册态"><span class="dot"></span>流 <b id="chip-stream-v">-</b></span>
+        <span class="chip" id="chip-screen" title="屏幕状态"><span class="dot"></span>屏 <b id="chip-screen-v">-</b></span>
+        <span class="chip" id="chip-cur" title="电池电流"><span class="dot"></span><b id="chip-cur-v">-</b></span>
+    </div>
+
+    <div class="layout">
+
+        <!-- 感知行为 -->
+        <div class="card">
+            <div class="card-title">⚙️ 感知行为 <span class="card-desc">（改动实时生效，无需重启）</span></div>
+            <div class="row">
+                <div>
+                    <div class="row-label">按需判定</div>
+                    <div class="row-hint">关 = 亮屏常驻推流（耗电）</div>
+                </div>
+                <label class="switch-wrapper">
+                    <input type="checkbox" id="demand-toggle" class="switch-input" onchange="setCfg('demand_mode', this.checked)">
+                    <span class="switch-slider"></span>
+                </label>
+            </div>
+            <div class="row">
+                <div>
+                    <div class="row-label">判定后流滞留</div>
+                    <div class="row-hint">应答后保持流开启的时长</div>
+                </div>
+                <div class="row-ctrl">
+                    <input type="range" id="dwell-range" min="10" max="180" step="10" value="60"
+                           oninput="document.getElementById('dwell-val').innerText=this.value+' s'"
+                           onchange="setCfg('demand_dwell_ms', this.value*1000)">
+                    <span class="range-val" id="dwell-val">60 s</span>
+                </div>
+            </div>
+            <div class="row">
+                <div>
+                    <div class="row-label">严格注视</div>
+                    <div class="row-hint">关 = 检测到人脸即续亮</div>
+                </div>
+                <label class="switch-wrapper">
+                    <input type="checkbox" id="gaze-toggle" class="switch-input" onchange="setCfg('require_gaze', this.checked)">
+                    <span class="switch-slider"></span>
+                </label>
+            </div>
+            <div class="row">
+                <div>
+                    <div class="row-label">注视丢失宽限</div>
+                    <div class="row-hint">视线移开后仍续亮的时长</div>
+                </div>
+                <div class="row-ctrl">
+                    <input type="range" id="grace-range" min="200" max="8000" step="100" value="800"
+                           oninput="document.getElementById('grace-val').innerText=this.value+' ms'"
+                           onchange="setCfg('gaze_grace_ms', this.value)">
+                    <span class="range-val" id="grace-val">800 ms</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 测试 + 高级参数 -->
+        <div class="card">
+            <div class="card-title">🧪 即时注视感知测试</div>
+            <div class="row" style="border-top:none;padding-top:2px;">
+                <div class="card-desc">注册一次 AON 流读取 EVT 帧，完成后自动恢复。</div>
+                <button id="btn-test" class="btn btn-primary" onclick="runAttentionTest()">⚡ 测试</button>
+            </div>
+            <div id="test-line" class="test-line">待测试…</div>
+
+            <div class="card-title" style="margin-top:10px;">🔧 高级 · AON 参数 <span class="card-desc">（重启感知后生效）</span></div>
+            <div class="param-grid">
+                <div class="p"><label>evtMask</label><input id="p-mask" type="number" value="15" inputmode="numeric"></div>
+                <div class="p"><label>algo</label><input id="p-algo" type="number" value="2" inputmode="numeric"></div>
+                <div class="p"><label>width</label><input id="p-width" type="number" value="480" inputmode="numeric"></div>
+                <div class="p"><label>height</label><input id="p-height" type="number" value="360" inputmode="numeric"></div>
+                <div class="p"><label>dps</label><input id="p-dps" type="number" value="3" inputmode="numeric"></div>
+            </div>
+            <button class="btn" style="align-self:flex-start;" onclick="applyParams()">应用参数</button>
+        </div>
+
+        <!-- 日志 -->
+        <div class="card log-card">
+            <div class="log-header">
+                <div class="card-title" style="margin:0;">📋 运行日志</div>
+                <div class="log-actions">
+                    <label><input type="checkbox" id="autoscroll" checked style="accent-color:var(--blue);"> 自动滚动</label>
+                    <button class="btn" style="padding:4px 10px;font-size:10.5px;" onclick="fetchLogs()">🔄</button>
+                    <button class="btn" style="padding:4px 10px;font-size:10.5px;" onclick="clearLogs()">🗑️</button>
+                </div>
+            </div>
+            <div id="log-console" class="log-box">正在加载运行日志...</div>
+        </div>
+    </div>
+
+    <div id="toast">提示信息</div>
+
+    <script>
+        const CTRL = "/data/adb/modules/tb522fu_attention_keepon/system/bin/attention_ctrl";
+
+        function ksuExec(cmd) {
+            return new Promise((resolve) => {
+                if (typeof ksu !== "undefined" && ksu.exec) {
+                    const cb = "cb_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
+                    window[cb] = function(errno, stdout, stderr) {
+                        delete window[cb];
+                        resolve({ errno, stdout, stderr });
+                    };
+                    ksu.exec(cmd, "{}", cb);
+                } else if (typeof ksu !== "undefined" && ksu.execAsync) {
+                    ksu.execAsync(cmd).then(r => resolve({ errno: 0, stdout: r })).catch(e => resolve({ errno: -1, stdout: "", stderr: String(e) }));
+                } else {
+                    resolve({ errno: -2, stdout: "", stderr: "未检测到 KernelSU WebUI 环境（请从管理器的模块 WebUI 入口打开）" });
+                }
+            });
+        }
+
+        function showToast(msg) {
+            const toast = document.getElementById("toast");
+            toast.innerText = msg;
+            toast.classList.add("show");
+            setTimeout(() => toast.classList.remove("show"), 2500);
+        }
+
+        function setChip(id, on, text) {
+            const chip = document.getElementById(id);
+            chip.classList.toggle("on", !!on);
+            chip.querySelector("b").innerText = text;
+        }
+
+        async function refreshStatus() {
+            const res = await ksuExec(CTRL + " status");
+            if (res.errno !== 0 || !res.stdout) return;
+            let d;
+            try { d = JSON.parse(res.stdout); } catch (e) { return; }
+
+            const toggle = document.getElementById("master-toggle");
+            toggle.checked = (d.enabled === true);
+
+            const badge = document.getElementById("service-badge");
+            const badgeText = document.getElementById("badge-text");
+            if (!d.service_running) {
+                badge.className = "badge badge-warn";
+                badgeText.innerText = "后台服务未运行";
+            } else if (d.enabled === false) {
+                badge.className = "badge";
+                badgeText.innerText = "功能已关闭";
+            } else if (d.stream_registered) {
+                badge.className = "badge badge-active";
+                badgeText.innerText = "感知中";
+            } else {
+                badge.className = "badge badge-active";
+                badgeText.innerText = "待机（按需）";
+            }
+
+            setChip("chip-svc", d.service_running, d.service_running ? ("pid " + (d.service_pid || "?")) : "未运行");
+            setChip("chip-stream", d.stream_registered, d.stream_registered ? "已注册" : "空闲");
+            setChip("chip-screen", d.wakefulness === "Awake", d.wakefulness === "Awake" ? "亮屏" : (d.wakefulness === "Asleep" ? "熄屏" : (d.wakefulness || "-")));
+            const cur = Number(d.battery_current_ua || 0);
+            setChip("chip-cur", false, (Math.abs(cur) / 1000).toFixed(0) + " mA");
+
+            // sync controls (only when not focused to avoid fighting the user)
+            const dt = document.getElementById("demand-toggle");
+            if (document.activeElement !== dt) dt.checked = (d.demand_mode === true);
+            document.getElementById("dwell-val").innerText = Math.round((d.demand_dwell_ms || 60000) / 1000) + " s";
+            const dr = document.getElementById("dwell-range");
+            if (document.activeElement !== dr) dr.value = Math.round((d.demand_dwell_ms || 60000) / 1000);
+            const gt = document.getElementById("gaze-toggle");
+            if (document.activeElement !== gt) gt.checked = (d.require_gaze === true);
+            const gr = document.getElementById("grace-range");
+            if (document.activeElement !== gr) gr.value = d.gaze_grace_ms || 800;
+            document.getElementById("grace-val").innerText = (d.gaze_grace_ms || 800) + " ms";
+            document.getElementById("p-mask").value = d.aon_evt_mask;
+            document.getElementById("p-algo").value = d.aon_algo;
+            document.getElementById("p-width").value = d.aon_width;
+            document.getElementById("p-height").value = d.aon_height;
+            document.getElementById("p-dps").value = d.aon_dps;
+        }
+
+        async function onToggleChange(enabled) {
+            showToast(enabled ? "正在开启注视不熄屏..." : "正在关闭功能...");
+            const res = await ksuExec(CTRL + " " + (enabled ? "on" : "off"));
+            if (res.errno === 0) {
+                showToast(enabled ? "✅ 已开启" : "⚪ 已关闭");
+                setTimeout(refreshStatus, 600);
+                setTimeout(fetchLogs, 800);
+            } else {
+                showToast("❌ 切换失败: " + (res.stderr || "未知错误"));
+            }
+        }
+
+        async function setCfg(key, value) {
+            const res = await ksuExec(CTRL + " set " + key + " " + value);
+            if (res.errno === 0) {
+                showToast("已应用: " + key + " = " + value);
+                setTimeout(refreshStatus, 500);
+            } else {
+                showToast("❌ 设置失败: " + (res.stderr || "未知错误"));
+            }
+        }
+
+        async function runAttentionTest() {
+            const btn = document.getElementById("btn-test");
+            const line = document.getElementById("test-line");
+
+            btn.disabled = true;
+            btn.innerText = "⏳ ≤8s";
+            line.style.display = "block";
+            line.innerText = "正在注册 AON 流并等待 EVT 帧...";
+
+            const res = await ksuExec(CTRL + " test");
+            btn.disabled = false;
+            btn.innerText = "⚡ 测试";
+
+            if (res.errno === 0 && res.stdout) {
+                let d;
+                try { d = JSON.parse(res.stdout); } catch (e) { line.innerText = "解析响应失败"; return; }
+                line.innerHTML = "<b>" + (d.resultName || "完成") + "</b> · code " + d.code +
+                    " · " + (d.elapsedMs || "-") + "ms · mask " + (d.detail ? d.detail.split(" ")[0] : "-") +
+                    " · " + (d.gaze ? "注视中" : (d.code === 1 ? "在场" : "-"));
+                showToast("测试完成: " + d.resultName);
+                fetchLogs();
+            } else {
+                line.innerText = "测试失败: " + (res.stderr || "超时");
+            }
+        }
+
+        async function applyParams() {
+            const keys = ["aon_evt_mask", "aon_algo", "aon_width", "aon_height", "aon_dps"];
+            const ids = ["p-mask", "p-algo", "p-width", "p-height", "p-dps"];
+            for (let i = 0; i < keys.length; i++) {
+                await ksuExec(CTRL + " set " + keys[i] + " " + document.getElementById(ids[i]).value);
+            }
+            showToast("参数已应用");
+            setTimeout(refreshStatus, 500);
+        }
+
+        async function fetchLogs() {
+            const box = document.getElementById("log-console");
+            const res = await ksuExec(CTRL + " log 120");
+            if (res.errno === 0) {
+                renderLogs(res.stdout || "暂无日志记录。");
+            } else {
+                box.innerText = "加载日志失败: " + (res.stderr || "");
+            }
+        }
+
+        function renderLogs(rawText) {
+            const box = document.getElementById("log-console");
+            const lines = rawText.split("\n");
+            let html = "";
+            lines.forEach(line => {
+                if (!line.trim()) return;
+                let cls = "";
+                if (line.includes("[TEST]")) cls = "log-line-test";
+                else if (line.includes("[STATUS]")) cls = "log-line-status";
+                else if (line.includes("[SYSTEM]")) cls = "log-line-system";
+                else if (line.includes("[WARN]") || line.includes("[ERROR]")) cls = "log-line-warn";
+                html += `<div class="${cls}">${escapeHtml(line)}</div>`;
+            });
+            box.innerHTML = html || "暂无日志记录。";
+            if (document.getElementById("autoscroll").checked) {
+                box.scrollTop = box.scrollHeight;
+            }
+        }
+
+        function escapeHtml(str) {
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+
+        async function clearLogs() {
+            const res = await ksuExec(CTRL + " clear_log");
+            if (res.errno === 0) {
+                showToast("日志已清空");
+                fetchLogs();
+            }
+        }
+
+        window.addEventListener("DOMContentLoaded", () => {
+            refreshStatus();
+            fetchLogs();
+            setInterval(refreshStatus, 8000);
+            setInterval(fetchLogs, 10000);
+        });
+    </script>
+</body>
+</html>

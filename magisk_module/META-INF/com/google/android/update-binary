@@ -1,0 +1,43 @@
+#!/sbin/sh
+#################
+# Magisk / KernelSU / APatch Module Installer
+#################
+OUTFD=$2
+ZIPFILE=$3
+
+ui_print() {
+  if [ -n "$OUTFD" ]; then
+    echo "ui_print $1" > "/proc/self/fd/$OUTFD" 2>/dev/null || echo "$1"
+    echo "ui_print" > "/proc/self/fd/$OUTFD" 2>/dev/null
+  else
+    echo "$1"
+  fi
+}
+
+abort() {
+  ui_print "***************************************************"
+  ui_print "❌ 安装终止: $1"
+  ui_print "***************************************************"
+  exit 1
+}
+
+ui_print "***************************************************"
+ui_print "  联想拯救者 Y900 (TB522FU) 注视不熄屏增强模块     "
+ui_print "  作者: futureharmony                              "
+ui_print "***************************************************"
+
+MODDIR="/data/adb/modules/tb522fu_attention_keepon"
+mkdir -p "$MODDIR"
+unzip -o "$ZIPFILE" -x 'META-INF/*' -d "$MODDIR"
+
+# 运行自定义安装配置脚本
+if [ -f "$MODDIR/customize.sh" ]; then
+    MODPATH="$MODDIR" sh "$MODDIR/customize.sh"
+fi
+
+chmod 755 "$MODDIR"/*.sh 2>/dev/null
+chmod 755 "$MODDIR"/*.bin 2>/dev/null
+[ -d "$MODDIR/system/bin" ] && chmod 755 "$MODDIR/system/bin"/* 2>/dev/null
+
+ui_print "✅ 模块解包部署成功！"
+exit 0

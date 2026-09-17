@@ -1,0 +1,339 @@
+#!/system/bin/sh
+##########################################################################################
+# Lenovo Legion Y900 (TB522FU) Attention Keep-On Controller (WebUI backend)
+# Author: futureharmony
+#
+# Subcommands:
+#   on|off|toggle        master switch (config.json + secure keys -> app service reacts)
+#   status               rich JSON status for the WebUI
+#   set <key> <value>    update config.json (key-preserving) + push secure mirror
+#                        keys: require_gaze gaze_grace_ms demand_mode demand_dwell_ms
+#                              aon_evt_mask aon_algo aon_width aon_height aon_dps
+#   test                 real single-shot detection: ensure stream, read EVT, restore
+#   log [n] / clear_log
+##########################################################################################
+
+CONF_DIR="/data/adb/tb522fu_attention"
+CONF_FILE="$CONF_DIR/config.json"
+LOG_FILE="$CONF_DIR/attention.log"
+MAX_LOG_LINES=800
+AON_DIR="/data/data/futureharmony.tb522fu.aon/files"
+CMD_FILE="$AON_DIR/aon_cmd"
+EVT_FILE="$AON_DIR/aon_evt"
+APP_PKG="futureharmony.tb522fu.aon"
+
+mkdir -p "$CONF_DIR" 2>/dev/null
+
+log_message() {
+    local tag="$1"
+    local msg="$2"
+    echo "[$(date "+%Y-%m-%d %H:%M:%S")] [$tag] $msg" >> "$LOG_FILE"
+    if [ -f "$LOG_FILE" ]; then
+        local line_count=$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)
+        if [ "$line_count" -gt "$MAX_LOG_LINES" ]; then
+            tail -n 400 "$LOG_FILE" > "$CONF_DIR/attention_tmp.log" 2>/dev/null && \
+                mv -f "$CONF_DIR/attention_tmp.log" "$LOG_FILE"
+        fi
+    fi
+}
+
+# ---------- config.json helpers (key-preserving; never rewrite the whole file) ----------
+
+json_get() {  # json_get <key> [default]
+    local v=$(sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*\([^,}]*\).*/\1/p' "$CONF_FILE" 2>/dev/null | head -n1 | tr -d '"' | tr -d '\r')
+    if [ -z "$v" ] || [ "$v" = "null" ]; then
+        echo "$2"
+    else
+        echo "$v"
+    fi
+}
+
+json_set() {  # json_set <key> <raw-value>
+    local key="$1" val="$2"
+    touch "$CONF_FILE" 2>/dev/null
+    if grep -q "\"$key\"" "$CONF_FILE" 2>/dev/null; then
+        sed -i 's/"'"$key"'"[[:space:]]*:[[:space:]]*[^,}]*/"'"$key"'": '"$val"'/' "$CONF_FILE" 2>/dev/null
+    else
+        # append into the JSON object
+        sed -i 's/}$/,\n  "'"$key"'": '"$val"'\n}/' "$CONF_FILE" 2>/dev/null
+    fi
+    # sanity: if file is no longer valid-looking JSON (no braces), rebuild minimal
+    if ! grep -q '{' "$CONF_FILE" 2>/dev/null; then
+        echo "{\"$key\": $val}" > "$CONF_FILE"
+    fi
+}
+
+get_config_enabled() {
+    json_get enabled true
+}
+
+set_config_enabled() {
+    json_set enabled "$1"
+    json_set updated_at "\"$(date "+%Y-%m-%d %H:%M:%S")\""
+}
+
+# Push a partial JSON overlay into the secure mirror; the app's ContentObserver
+# reloads it in real time (applySecure only overrides keys present in the blob).
+push_mirror() {  # push_mirror <raw-json>
+    settings put secure tb522fu_aon_config "$1" 2>/dev/null
+}
+
+uptime_ms() {
+    awk '{printf "%.0f", $1 * 1000}' /proc/uptime 2>/dev/null
+}
+
+daemon_alive() {
+    pidof aon_daemon.bin >/dev/null 2>&1 && echo true || echo false
+}
+
+# Last HBT registration state: st=0 unregistered, st=1 registered
+stream_registered() {
+    [ -f "$EVT_FILE" ] || { echo 0; return; }
+    local st=$(tail -n 20 "$EVT_FILE" 2>/dev/null | grep '^HBT' | tail -n1 | sed 's/.*st=\([0-9]*\).*/\1/')
+    echo "${st:-0}"
+}
+
+battery_now_ua() {
+    cat /sys/class/power_supply/battery/current_now 2>/dev/null | tr -d '\r\n'
+}
+
+sync_service() {
+    am start-foreground-service -n $APP_PKG/.AONAttentionService >/dev/null 2>&1 || true
+}
+
+# Write a full start command from config params (daemon sscanf expects 7 fields).
+cmd_start() {
+    local mask=$(json_get aon_evt_mask 15)
+    local algo=$(json_get aon_algo 2)
+    local w=$(json_get aon_width 480)
+    local h=$(json_get aon_height 360)
+    local dps=$(json_get aon_dps 3)
+    local seq=$(uptime_ms)
+    seq=$((seq + 10))
+    echo "state=start 0 1 $mask $algo $w $h $dps seq=$seq" > "$CMD_FILE" 2>/dev/null
+}
+
+cmd_stop() {
+    local seq=$(uptime_ms)
+    seq=$((seq + 10))
+    echo "state=stop seq=$seq" > "$CMD_FILE" 2>/dev/null
+}
+
+# ----------------------------------------------- master switch --------------------------
+
+cmd_on() {
+    set_config_enabled true
+    settings put secure adaptive_sleep 1 2>/dev/null
+    settings put secure tb522fu_aon_enabled 1 2>/dev/null
+    # Demand Mode contract: AttentionManagerService only calls onCheckAttention on
+    # the component registered here. The LSPosed hook may be inactive, so the root
+    # side owns this write (same mechanism LwKy used, pointed at our service).
+    settings put secure attention_service_component \
+        "$APP_PKG/$APP_PKG.AONAttentionService" 2>/dev/null
+    sync_service
+    log_message "STATUS" "开启注视不熄屏功能 (AON KeepOn Enabled)"
+    echo "{\"success\":true,\"message\":\"注视不熄屏已开启\"}"
+}
+
+cmd_off() {
+    set_config_enabled false
+    settings put secure adaptive_sleep 0 2>/dev/null
+    settings put secure tb522fu_aon_enabled 0 2>/dev/null
+    sync_service
+    log_message "STATUS" "关闭注视不熄屏功能 (AON KeepOn Disabled)"
+    echo "{\"success\":true,\"message\":\"注视不熄屏已关闭\"}"
+}
+
+# ------------------------------------------------ status --------------------------------
+
+cmd_status() {
+    local is_enabled=$(get_config_enabled)
+    local asleep=$(settings get secure adaptive_sleep 2>/dev/null); [ -z "$asleep" ] && asleep=0
+    local app_enabled=$(settings get secure tb522fu_aon_enabled 2>/dev/null)
+    { [ -z "$app_enabled" ] || [ "$app_enabled" = "null" ]; } && app_enabled=$asleep
+
+    local wake=$(dumpsys power 2>/dev/null | grep -m1 "mWakefulness=" | cut -d= -f2 | tr -d "\r"); [ -z "$wake" ] && wake="Unknown"
+    local timeout_ms=$(dumpsys power 2>/dev/null | grep -m1 "mScreenOffTimeoutSetting=" | cut -d= -f2 | tr -d "\r"); [ -z "$timeout_ms" ] && timeout_ms=120000
+    local svc_pid=$(pidof $APP_PKG:attention 2>/dev/null | awk '{print $1}')
+    { [ -z "$svc_pid" ] || [ "$svc_pid" = "null" ]; } && svc_pid=$(pidof $APP_PKG 2>/dev/null | awk '{print $1}')
+    local svc_running=false; [ -n "$svc_pid" ] && [ "$svc_pid" != "null" ] && svc_running=true
+    local comp=$(settings get secure attention_service_component 2>/dev/null)
+    [ "$comp" = "null" ] && comp=""
+
+    local daemon=$(daemon_alive)
+    local st=$(stream_registered)
+    local reg=$([ "$st" = "1" ] && echo true || echo false)
+    local cur=$(battery_now_ua); [ -z "$cur" ] && cur=0
+
+    # last EVT age in seconds
+    local evt_age=-1
+    if [ -f "$EVT_FILE" ]; then
+        local last_ts=$(stat -c %Y "$EVT_FILE" 2>/dev/null)
+        [ -n "$last_ts" ] && evt_age=$(( $(date +%s) - last_ts ))
+    fi
+
+    cat << EOF
+{
+  "success": true,
+  "enabled": $is_enabled,
+  "adaptive_sleep": $asleep,
+  "app_enabled": $app_enabled,
+  "wakefulness": "$wake",
+  "timeout_ms": $timeout_ms,
+  "service_running": $svc_running,
+  "service_pid": "$svc_pid",
+  "component": "$comp",
+  "daemon_alive": $daemon,
+  "stream_registered": $reg,
+  "stream_state": $st,
+  "evt_age_s": $evt_age,
+  "battery_current_ua": $cur,
+  "require_gaze": $(json_get require_gaze true),
+  "gaze_grace_ms": $(json_get gaze_grace_ms 800),
+  "demand_mode": $(json_get demand_mode true),
+  "demand_dwell_ms": $(json_get demand_dwell_ms 60000),
+  "aon_evt_mask": $(json_get aon_evt_mask 15),
+  "aon_algo": $(json_get aon_algo 2),
+  "aon_width": $(json_get aon_width 480),
+  "aon_height": $(json_get aon_height 360),
+  "aon_dps": $(json_get aon_dps 3),
+  "hardware_sensor": "Camera 3 (OG0VE) Qualcomm AON FDPRO"
+}
+EOF
+}
+
+# ------------------------------------------------ set -----------------------------------
+
+cmd_set() {
+    local key="$1" val="$2"
+    case "$key" in
+        require_gaze|demand_mode)
+            case "$val" in true|false) ;; *) echo "{\"success\":false,\"message\":\"$key 需为 true/false\"}"; exit 1;; esac
+            json_set "$key" "$val"
+            ;;
+        gaze_grace_ms|demand_dwell_ms|aon_evt_mask|aon_algo|aon_width|aon_height|aon_dps)
+            case "$val" in ''|*[!0-9]*) echo "{\"success\":false,\"message\":\"$key 需为整数\"}"; exit 1;; esac
+            json_set "$key" "$val"
+            ;;
+        *)
+            echo "{\"success\":false,\"message\":\"未知配置项: $key\"}"
+            exit 1
+            ;;
+    esac
+    # mirror the changed key into the secure channel (app reloads live)
+    push_mirror "{\"$key\": $val}"
+    log_message "STATUS" "set $key=$val (config.json + secure mirror)"
+    echo "{\"success\":true,\"message\":\"$key = $val 已应用\"}"
+}
+
+# ------------------------------------------- test ----------------------------------
+
+# Real single-shot detection: make sure the daemon stream is registered, capture
+# new EVT lines for up to 8s, judge mask bits, then restore the prior state.
+cmd_test() {
+    if [ "$(daemon_alive)" != "true" ]; then
+        echo "{\"success\":false,\"code\":-1,\"resultName\":\"AON 守护进程未运行\",\"detail\":\"请重启模块或检查 service.sh\"}"
+        exit 0
+    fi
+
+    local prev_st=$(stream_registered)
+    local sz0=$(stat -c %s "$EVT_FILE" 2>/dev/null || echo 0)
+    local t0=$(uptime_ms)
+
+    if [ "$prev_st" != "1" ]; then
+        cmd_start
+        log_message "TEST" "test: stream was down -> registering (state=start)"
+    fi
+
+    local found=""
+    local i=0
+    while [ $i -lt 40 ]; do   # 40 x 200ms = 8s
+        sleep 0.2
+        local sz1=$(stat -c %s "$EVT_FILE" 2>/dev/null || echo 0)
+        if [ "$sz1" -gt "$sz0" ]; then
+            found=$(tail -c +$((sz0 + 1)) "$EVT_FILE" 2>/dev/null | grep '^EVT' | tail -n1)
+            case "$found" in
+                *"EVT b=1 "*) break ;;
+                *"EVT pres=0"*) sz0=$sz1 ;;  # keep waiting for a b=1 frame
+            esac
+        fi
+        i=$((i + 1))
+    done
+
+    local elapsed=$(( $(uptime_ms) - t0 ))
+    local code=-1 name="无事件（流未出帧）" mask=0 gaze=false detail=""
+    case "$found" in
+        *"EVT b=1 "*)
+            local vals=$(echo "$found" | sed 's/.*vals=//' | tr -d '\r')
+            mask=$(echo "$vals" | cut -d, -f1)
+            gaze=false
+            [ $((mask & 4)) -ne 0 ] && gaze=true
+            if [ $((mask & 1)) -ne 0 ]; then
+                code=1; name="PRESENT（检测到人脸）"
+                $gaze && name="PRESENT（注视屏幕）" || name="PRESENT（在场，未注视）"
+            else
+                code=0; name="ABSENT（未检测到人脸）"
+            fi
+            detail="mask=0x$(printf '%x' "$mask") vals=$vals"
+            ;;
+        *"EVT pres=0"*)
+            code=0; name="ABSENT（未检测到人脸）"
+            ;;
+    esac
+
+    # Restore prior state: if the stream was down before the test, stop it again
+    # (demand mode keeps it down between framework checks).
+    if [ "$prev_st" != "1" ]; then
+        cmd_stop
+        log_message "TEST" "test: restoring stream down (state=stop)"
+    fi
+    log_message "TEST" "test result: code=$code $name elapsed=${elapsed}ms $detail"
+
+    cat << EOF
+{
+  "success": true,
+  "code": $code,
+  "resultName": "$name",
+  "elapsedMs": $elapsed,
+  "mask": $mask,
+  "gaze": $gaze,
+  "detail": "$detail",
+  "action": "$([ $code = 1 ] && echo 检测到在场 / 注视 || echo 未检测到人脸)"
+}
+EOF
+}
+
+# ------------------------------------------------ log -----------------------------------
+
+cmd_log() {
+    local lines="${1:-100}"
+    if [ -f "$LOG_FILE" ]; then
+        tail -n "$lines" "$LOG_FILE"
+    else
+        echo "暂无运行日志。"
+    fi
+}
+
+cmd_clear_log() {
+    > "$LOG_FILE"
+    log_message "SYSTEM" "日志已清空"
+    echo "{\"success\":true,\"message\":\"日志已成功清空\"}"
+}
+
+case "$1" in
+    on)         cmd_on ;;
+    off)        cmd_off ;;
+    toggle)
+        if [ "$(get_config_enabled)" = "true" ]; then cmd_off; else cmd_on; fi
+        ;;
+    status)     cmd_status ;;
+    set)        cmd_set "$2" "$3" ;;
+    test)       cmd_test ;;
+    log)        cmd_log "$2" ;;
+    clear_log)  cmd_clear_log ;;
+    daemon)     : ;;  # retired: screen sync is owned by the app service (Plan A)
+    *)
+        echo "Usage: attention_ctrl {on|off|toggle|status|set <key> <val>|test|log [n]|clear_log}"
+        exit 1
+        ;;
+esac

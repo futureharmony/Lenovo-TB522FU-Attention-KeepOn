@@ -1,0 +1,69 @@
+name: Build & Release
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    name: Syntax & package check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax check
+        run: |
+          for f in magisk_module/*.sh magisk_module/system/bin/attention_ctrl app/build_apk.sh build_zip.sh; do
+            [ -f "$f" ] || continue
+            sh -n "$f" && echo "OK: $f"
+          done
+      - name: Verify required payloads
+        run: |
+          test -f magisk_module/aon.apk
+          test -f magisk_module/aon_daemon.bin
+          test -f magisk_module/webroot/index.html
+          test -f magisk_module/system/bin/attention_ctrl
+      - name: Build module zip
+        run: |
+          VERSION=$(grep '^version=' magisk_module/module.prop | cut -d= -f2)
+          ZIP="Lenovo-TB522FU-Attention-KeepOn-${VERSION}.zip"
+          (cd magisk_module && zip -r9 "../${ZIP}" . -x '*.DS_Store' -x '__MACOSX/*')
+          echo "ZIP=${ZIP}" >> "$GITHUB_ENV"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: module-zip
+          path: ${{ env.ZIP }}
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag matches module.prop version
+        run: |
+          VERSION=$(grep '^version=' magisk_module/module.prop | cut -d= -f2)
+          if [ "refs/tags/${VERSION}" != "${{ github.ref }}" ]; then
+            echo "::error::tag ${{ github.ref_name }} != module.prop version ${VERSION}"
+            exit 1
+          fi
+      - name: Build module zip
+        run: |
+          VERSION=$(grep '^version=' magisk_module/module.prop | cut -d= -f2)
+          ZIP="Lenovo-TB522FU-Attention-KeepOn-${VERSION}.zip"
+          (cd magisk_module && zip -r9 "../${ZIP}" . -x '*.DS_Store' -x '__MACOSX/*')
+          echo "ZIP=${ZIP}" >> "$GITHUB_ENV"
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ZIP }}
+            magisk_module/aon.apk
+          generate_release_notes: true
