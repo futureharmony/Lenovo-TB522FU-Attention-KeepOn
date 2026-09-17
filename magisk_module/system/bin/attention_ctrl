@@ -11,7 +11,7 @@
 #                              aon_evt_mask aon_algo aon_width aon_height aon_dps
 #   test                 real single-shot detection: ensure stream, wait new EVT, restore
 #   bind | unbind        point the framework (AttentionManagerService) at our service
-#   log [n] / clear_log
+#   log [n] / export / clear_log   combined logs (module + app + logcat) / save to Download
 #
 # ── 框架绑定（本模块的关键契约，2026-09-17 定案）────────────────────────────────
 # ROM 的 AttentionManagerService 只从框架资源 config_defaultAttentionService 取
@@ -296,6 +296,20 @@ cmd_set() {
             ;;
         gaze_grace_ms|demand_dwell_ms|aon_evt_mask|aon_algo|aon_width|aon_height|aon_dps)
             case "$val" in ''|*[!0-9]*) echo "{\"success\":false,\"message\":\"$key 需为整数\"}"; exit 1;; esac
+            # 数值范围硬校验：越界值直接拒绝，防止守护协议收到非法参数
+            case "$key" in
+                aon_evt_mask)    _lo=0;     _hi=15;;
+                aon_algo)        _lo=1;     _hi=2;;
+                aon_width)       _lo=160;   _hi=640;;
+                aon_height)      _lo=120;   _hi=480;;
+                aon_dps)         _lo=1;     _hi=30;;
+                gaze_grace_ms)   _lo=0;     _hi=60000;;
+                demand_dwell_ms) _lo=1000;  _hi=600000;;
+            esac
+            if [ "$val" -lt "$_lo" ] || [ "$val" -gt "$_hi" ]; then
+                echo "{\"success\":false,\"message\":\"$key 超出合法范围 [$_lo, $_hi]\"}"
+                exit 1
+            fi
             json_set "$key" "$val"
             ;;
         *)
@@ -420,19 +434,89 @@ EOF
 
 # ------------------------------------------------ log -----------------------------------
 
-cmd_log() {
-    local lines="${1:-100}"
+# 全量日志收集：模块脚本日志 + App 后台服务文件日志 + 服务进程 logcat。
+# WebUI「运行日志」与 `export` 共用本函数。
+unified_log() {
+    local n="${1:-200}"
+    local Y=$(date +%Y)
+    local TAB=$(printf '\t')
+    local tmp="$CONF_DIR/.unified.$$"
+    : > "$tmp"
+
+    # [模块] attention.log: "[2026-09-17 23:02:15] [TEST] msg"
     if [ -f "$LOG_FILE" ]; then
-        tail -n "$lines" "$LOG_FILE"
-    else
-        echo "暂无运行日志。"
+        tail -n "$n" "$LOG_FILE" 2>/dev/null | \
+            sed -n "s/^\[\([0-9][0-9-]* [0-9:]*\)\] \(.*\)$/\1${TAB}模块${TAB}\2/p" >> "$tmp"
     fi
+
+    # [服务] aon.log: "09-17 23:05:15.547 I/SVC: msg"（补年份参与排序）
+    if [ -f "$AON_DIR/aon.log" ]; then
+        tail -n "$n" "$AON_DIR/aon.log" 2>/dev/null | \
+            sed -n "s/^\([0-9][0-9]-[0-9][0-9] [0-9:.]*\) \(.*\)$/$Y-\1${TAB}服务${TAB}\2/p" >> "$tmp"
+    fi
+
+    # [框架] logcat 中 Attention 相关行: "09-17 23:05:15.547 E AttentionManager: msg"
+    # App 进程不写 logcat（其日志走 aon.log），本段采集框架侧的注视判定与息屏决策。
+    logcat -d -t 3000 2>/dev/null | \
+        grep -iE "attentionmanager|attentiondetector|checkAttention|adaptive_sleep|setTestableAttention" | \
+        tail -n "$n" | \
+        sed -n "s/^\([0-9][0-9]-[0-9][0-9] [0-9:.]*\) \(.*\)$/$Y-\1${TAB}框架${TAB}\2/p" >> "$tmp"
+
+    # -t 指定制表符为唯一分隔符：field1 = 完整时间戳 key（含空格）。
+    # toybox sort 默认把空格也当分隔符，会把 key 截断成纯日期导致排序失效。
+    sort -s -t "$TAB" -k1,1 "$tmp" 2>/dev/null | tail -n "$n" | while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        ts=${line%%"$TAB"*}
+        rem=${line#*"$TAB"}
+        src=${rem%%"$TAB"*}
+        rest=${rem#*"$TAB"}
+        echo "[$src] [$ts] $rest"
+    done
+    rm -f "$tmp"
+}
+
+cmd_log() {
+    unified_log "${1:-200}"
+}
+
+cmd_export() {
+    local ts=$(date "+%Y%m%d-%H%M%S")
+    local dest_dir="/sdcard/Download"
+    local dest="$dest_dir/AttentionKeepOn-log-$ts.log"
+    local tmp="$CONF_DIR/export-$ts.tmp"
+    {
+        echo "# Lenovo Legion Y900 (TB522FU) Attention KeepOn 日志导出"
+        echo "# 导出时间: $(date "+%Y-%m-%d %H:%M:%S")"
+        echo "# 设备: $(getprop ro.product.model 2>/dev/null) / Android $(getprop ro.build.version.release 2>/dev/null)"
+        echo "# 模块版本: $(grep '^version=' /data/adb/modules/tb522fu_attention_keepon/module.prop 2>/dev/null | cut -d= -f2)"
+        echo "# 日志记录开关: $(json_get log_enabled false)（关闭状态下仅含历史日志；开启后才有持续新日志）"
+        echo "# 来源前缀: [模块]=模块脚本  [服务]=App 后台服务  [框架]=系统框架 logcat"
+        echo ""
+        unified_log 400
+    } > "$tmp" 2>/dev/null
+    if [ ! -s "$tmp" ]; then
+        rm -f "$tmp"
+        echo "{\"success\":false,\"message\":\"日志内容为空，导出失败\"}"
+        return 1
+    fi
+    mkdir -p "$dest_dir" 2>/dev/null
+    if cp -f "$tmp" "$dest" 2>/dev/null && chmod 644 "$dest" 2>/dev/null; then
+        rm -f "$tmp"
+        echo "{\"success\":true,\"path\":\"$dest\",\"size\":$(wc -c < "$dest" 2>/dev/null || echo 0)}"
+        return 0
+    fi
+    rm -f "$tmp"
+    echo "{\"success\":false,\"message\":\"写入 $dest_dir 失败（存储不可用）\"}"
+    return 1
 }
 
 cmd_clear_log() {
-    > "$LOG_FILE"
-    log_message "SYSTEM" "日志已清空"
-    echo "{\"success\":true,\"message\":\"日志已成功清空\"}"
+    # 三段日志全量清空：模块日志 + App 服务文件日志 + 系统 logcat 缓冲区
+    > "$LOG_FILE" 2>/dev/null
+    [ -f "$AON_DIR/aon.log" ] && > "$AON_DIR/aon.log" 2>/dev/null
+    logcat -c 2>/dev/null || true
+    log_message "SYSTEM" "日志已清空 (attention.log + aon.log + logcat)"
+    echo "{\"success\":true,\"message\":\"日志已成功清空（含 App 服务日志与系统 logcat）\"}"
 }
 
 # ------------------------------- framework binding (AttentionService) -------------------
@@ -488,10 +572,11 @@ case "$1" in
     bind)       cmd_bind ;;
     unbind)     cmd_unbind ;;
     log)        cmd_log "$2" ;;
+    export)     cmd_export ;;
     clear_log)  cmd_clear_log ;;
     daemon)     : ;;  # retired: screen sync is owned by the app service (Plan A)
     *)
-        echo "Usage: attention_ctrl {on|off|toggle|status|set <key> <val>|test|bind|unbind|log [n]|clear_log}"
+        echo "Usage: attention_ctrl {on|off|toggle|status|set <key> <val>|test|bind|unbind|log [n]|export|clear_log}"
         exit 1
         ;;
 esac

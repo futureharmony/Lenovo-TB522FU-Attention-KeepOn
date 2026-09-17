@@ -146,6 +146,28 @@
         .switch-input:checked + .switch-slider:before { transform: translateX(20px); }
         .switch-input:checked + .switch-slider.danger { background-color: var(--rose); }
 
+        /* 操作进行中：统一禁点，防止连点 */
+        body.busy .switch-wrapper, body.busy .log-switch, body.busy .btn, body.busy input[type="range"] {
+            pointer-events: none; opacity: 0.55;
+        }
+
+        /* 日志卡片内的小号开关（必须自带定位，否则滑块会相对视口全屏铺开） */
+        .log-switch {
+            position: relative; display: inline-block;
+            width: 34px; height: 20px; flex-shrink: 0; cursor: pointer; vertical-align: middle;
+        }
+        .log-switch .switch-slider:before { height: 16px; width: 16px; }
+        .log-switch .switch-input:checked + .switch-slider:before { transform: translateX(14px); }
+
+        /* 测试按钮 loading 态 */
+        .btn.loading { opacity: 1; cursor: wait; }
+        .spinner {
+            display: inline-block; width: 12px; height: 12px;
+            border: 2px solid rgba(255,255,255,0.35); border-top-color: #fff;
+            border-radius: 50%; animation: spin 0.7s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
         input[type="range"] { width: 110px; accent-color: var(--blue); height: 20px; }
         .range-val { font-size: 11px; color: var(--text-secondary); min-width: 48px; text-align: right; font-family: var(--font-mono); }
 
@@ -174,6 +196,12 @@
             border: 1px solid var(--border); border-radius: var(--radius-sm);
             padding: 5px 6px; font-size: 11.5px; font-family: var(--font-mono); outline: none;
         }
+        .param-grid input.invalid { border-color: var(--rose); box-shadow: 0 0 0 2px rgba(244, 63, 94, .18); }
+        .param-help { margin: 6px 0 10px; font-size: 11px; color: var(--text-secondary); }
+        .param-help summary { cursor: pointer; color: var(--blue); font-size: 11px; user-select: none; padding: 2px 0; }
+        .param-help .ph-item { padding: 6px 0 2px; line-height: 1.5; border-top: 1px dashed var(--border); }
+        .param-help .ph-item:first-of-type { border-top: none; }
+        .param-help .ph-item b { color: var(--text-primary); }
 
         /* log */
         .log-card { min-height: 160px; }
@@ -193,6 +221,17 @@
         .log-line-test { color: #fbbf24; }
         .log-line-system { color: #38bdf8; }
         .log-line-warn { color: #fb7185; }
+        .log-line-section { color: var(--blue); font-weight: 700; margin-top: 5px; }
+        .log-empty { color: var(--text-muted); font-family: var(--font-sans); font-size: 11px; }
+
+        /* 日志开启时的醒目提醒横幅 */
+        .log-banner {
+            display: none; flex: 0 0 auto; margin-bottom: 6px;
+            padding: 6px 10px; border-radius: var(--radius-sm);
+            background: rgba(245, 158, 11, 0.12); border: 1px solid var(--amber);
+            color: var(--amber); font-size: 10.5px; line-height: 1.5;
+        }
+        .log-banner.show { display: block; }
 
         #toast {
             position: fixed; bottom: 20px; left: 50%;
@@ -263,6 +302,7 @@
                     <span class="range-val" id="dwell-val">60 s</span>
                 </div>
             </div>
+            <div class="row-hint" style="padding:0 0 2px 12px;">范围 10–180 s：越短越省电，太短会导致连续滑动/阅读时频繁重启相机流</div>
             <div class="row">
                 <div>
                     <div class="row-label">严格注视</div>
@@ -285,6 +325,7 @@
                     <span class="range-val" id="grace-val">800 ms</span>
                 </div>
             </div>
+            <div class="row-hint" style="padding:0 0 2px 12px;">范围 200–8000 ms：太短会因瞬间移开视线就息屏，太长则看别处后屏幕亮得偏久</div>
         </div>
 
         <!-- 测试 + 高级参数 -->
@@ -298,13 +339,21 @@
 
             <div class="card-title" style="margin-top:10px;">🔧 高级 · AON 参数 <span class="card-desc">（重启感知后生效）</span></div>
             <div class="param-grid">
-                <div class="p"><label>evtMask</label><input id="p-mask" type="number" value="15" inputmode="numeric"></div>
-                <div class="p"><label>algo</label><input id="p-algo" type="number" value="2" inputmode="numeric"></div>
-                <div class="p"><label>width</label><input id="p-width" type="number" value="480" inputmode="numeric"></div>
-                <div class="p"><label>height</label><input id="p-height" type="number" value="360" inputmode="numeric"></div>
-                <div class="p"><label>dps</label><input id="p-dps" type="number" value="3" inputmode="numeric"></div>
+                <div class="p"><label>evtMask</label><input id="p-mask" type="number" value="15" min="0" max="15" step="1" inputmode="numeric" title="事件位掩码 0–15（0xF 全开）"></div>
+                <div class="p"><label>algo</label><input id="p-algo" type="number" value="2" min="1" max="2" step="1" inputmode="numeric" title="算法 1–2（2=FDPro，已验证）"></div>
+                <div class="p"><label>width</label><input id="p-width" type="number" value="480" min="160" max="640" step="2" inputmode="numeric" title="宽度 160–640（推荐 480）"></div>
+                <div class="p"><label>height</label><input id="p-height" type="number" value="360" min="120" max="480" step="2" inputmode="numeric" title="高度 120–480（推荐 360）"></div>
+                <div class="p"><label>dps</label><input id="p-dps" type="number" value="3" min="1" max="30" step="1" inputmode="numeric" title="帧率 1–30（推荐 3）"></div>
             </div>
-            <button class="btn" style="align-self:flex-start;" onclick="applyParams()">应用参数</button>
+            <details class="param-help">
+                <summary>❓ 各参数的用法与可用范围</summary>
+                <div class="ph-item"><b>evtMask · 事件位掩码</b>（0–15）<br>控制 AON 引擎上报的事件类别，按位开关（各 bit 的官方定义未公开）。15（0xF）= 全部开启，是实测验证可用的组合；设 0 能开流但拿不到判定结果。推荐 15。</div>
+                <div class="ph-item"><b>algo · 算法档位</b>（1–2）<br>FD 引擎的算法选择。2 = FDPro，本机固件实测唯一验证可用的档位；1 为旧档位，未在当前固件验证。推荐 2。</div>
+                <div class="ph-item"><b>width / height · 出图分辨率</b>（160–640 / 120–480）<br>AON 相机每帧的宽与高。传感器原生模式是 480×360，偏离原生值可能拿不到事件帧。推荐 480×360。</div>
+                <div class="ph-item"><b>dps · 检测帧率</b>（1–30，单位：帧/秒）<br>每秒送出的检测帧数。越高注视判定越跟手、越耗电；越低越省电但反应变慢。传感器上限 30 fps。推荐 3（日常注视检测足够）。</div>
+                <div class="ph-item" style="color:var(--text-muted);">改完点「应用参数」生效（会重启感知流，约 1 秒）。所有值均有合法范围校验，非法输入不会被应用。</div>
+            </details>
+            <button class="btn" style="align-self:flex-start;" onclick="applyParams(this)">应用参数</button>
         </div>
 
         <!-- 日志 -->
@@ -319,8 +368,9 @@
                 </div>
                 <div class="log-actions">
                     <label><input type="checkbox" id="autoscroll" checked style="accent-color:var(--blue);"> 自动滚动</label>
-                    <button class="btn" style="padding:4px 10px;font-size:10.5px;" onclick="fetchLogs()">🔄</button>
-                    <button class="btn" style="padding:4px 10px;font-size:10.5px;" onclick="clearLogs()">🗑️</button>
+                    <button class="btn" style="padding:4px 10px;font-size:10.5px;" onclick="exportLogs()" title="把全部日志保存到 Download（下载）目录">⬇️ 导出到下载</button>
+                    <button class="btn" style="padding:4px 10px;font-size:10.5px;" onclick="fetchLogs()" title="刷新">🔄</button>
+                    <button class="btn" style="padding:4px 10px;font-size:10.5px;" onclick="clearLogs()" title="清空">🗑️</button>
                 </div>
             </div>
             <div id="log-banner" class="log-banner">⚠️ 日志记录中 —— 持续写入会占用存储，排查完成后请回到此处关闭「记录」开关</div>
@@ -350,11 +400,22 @@
             });
         }
 
-        function showToast(msg) {
+        function busyCtrl() {
+            busyCount++;
+            document.body.classList.add("busy");
+            return function un() {
+                busyCount = Math.max(0, busyCount - 1);
+                if (busyCount === 0) document.body.classList.remove("busy");
+            };
+        }
+        let busyCount = 0;
+
+        function showToast(msg, ms) {
             const toast = document.getElementById("toast");
             toast.innerText = msg;
             toast.classList.add("show");
-            setTimeout(() => toast.classList.remove("show"), 2500);
+            clearTimeout(toast._timer);
+            toast._timer = setTimeout(() => toast.classList.remove("show"), ms || 2500);
         }
 
         function setChip(id, on, text) {
@@ -435,7 +496,33 @@
             }
         }
 
+        // 数值配置项合法范围（与后端 cmd_set 硬校验一致；非法值不发命令）
+        const NUM_LIMITS = {
+            demand_dwell_ms: { min: 10000, max: 180000, label: "驻留时长 10–180 s" },
+            gaze_grace_ms:   { min: 200,   max: 8000,   label: "宽限 200–8000 ms" },
+            aon_evt_mask:    { min: 0,     max: 15,     label: "evtMask 0–15" },
+            aon_algo:        { min: 1,     max: 2,      label: "algo 1–2" },
+            aon_width:       { min: 160,   max: 640,    label: "width 160–640" },
+            aon_height:      { min: 120,   max: 480,    label: "height 120–480" },
+            aon_dps:         { min: 1,     max: 30,     label: "dps 1–30" }
+        };
+
+        function validateNum(key, value) {
+            const lim = NUM_LIMITS[key];
+            if (!lim) return { ok: true };
+            const n = Number(value);
+            if (!Number.isInteger(n) || n < lim.min || n > lim.max) {
+                return { ok: false, msg: key + " 非法：需为 " + lim.label + " 的整数（当前 " + value + "）" };
+            }
+            return { ok: true, n };
+        }
+
         async function setCfg(key, value, ctrl) {
+            if (NUM_LIMITS[key]) {
+                const v = validateNum(key, value);
+                if (!v.ok) { showToast("❌ " + v.msg, 4000); setTimeout(refreshStatus, 300); return; }
+                value = v.n;
+            }
             const un = busyCtrl(ctrl || null);
             const res = await ksuExec(CTRL + " set " + key + " " + value);
             un();
@@ -467,6 +554,8 @@
             }
         }
 
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
         async function runAttentionTest() {
             const btn = document.getElementById("btn-test");
             const line = document.getElementById("test-line");
@@ -476,18 +565,44 @@
             btn.innerHTML = '<span class="spinner"></span>测试中 <span id="test-elapsed">0</span>s';
             line.style.display = "block";
             line.innerText = "正在注册 AON 流并等待 EVT 帧（常规 2~4s，冷启动最长 ~30s）...";
+
+            // 先让 loading 上屏渲染，再发起命令
+            await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 50)));
+
             const t0 = Date.now();
             const timer = setInterval(() => {
                 const el = document.getElementById("test-elapsed");
                 if (el) el.innerText = Math.round((Date.now() - t0) / 1000);
             }, 500);
 
-            const res = await ksuExec(CTRL + " test");
+            // 关键：ksu.exec 是同步的，长命令会阻塞 WebView JS 线程（UI 卡死、动效冻结）。
+            // 因此把测试放到后台子 shell 执行并立即返回，随后轮询结果文件。
+            const out = "/data/local/tmp/.aon_test_out";
+            const flag = "/data/local/tmp/.aon_test_done";
+            await ksuExec("rm -f " + out + " " + flag);
+            await ksuExec("nohup /system/bin/sh -c '(" + CTRL + " test > " + out + " 2>&1; touch " + flag + ")' >/dev/null 2>&1 &");
+
+            let done = false;
+            while (Date.now() - t0 < 40000) {
+                await sleep(500);
+                const r = await ksuExec("test -f " + flag + " && echo yes");
+                if (r.errno === 0 && /yes/.test(r.stdout || "")) { done = true; break; }
+            }
             clearInterval(timer);
+
+            const res = await ksuExec("cat " + out + " 2>/dev/null");
+            await ksuExec("rm -f " + out + " " + flag);
+
             btn.disabled = false;
             btn.classList.remove("loading");
             btn.innerText = "⚡ 测试";
 
+            if (!done) {
+                line.innerText = "测试超时（>40s），请检查服务状态后重试";
+                showToast("测试超时");
+                if (logEnabled) fetchLogs();
+                return;
+            }
             if (res.errno === 0 && res.stdout) {
                 let d;
                 try { d = JSON.parse(res.stdout); } catch (e) { line.innerText = "解析响应失败"; return; }
@@ -497,17 +612,28 @@
                 showToast("测试完成: " + d.resultName);
                 if (logEnabled) fetchLogs();
             } else {
-                line.innerText = "测试失败: " + (res.stderr || "超时");
+                line.innerText = "测试失败: " + (res.stderr || "无输出");
             }
         }
 
         async function applyParams(btn) {
-            const un = busyCtrl(btn);
-            if (btn) { btn.disabled = true; btn.innerText = "应用中..."; }
             const keys = ["aon_evt_mask", "aon_algo", "aon_width", "aon_height", "aon_dps"];
             const ids = ["p-mask", "p-algo", "p-width", "p-height", "p-dps"];
+            // 全部先校验：任何一个非法就不发送，红框标出并提示
+            const values = [];
+            let bad = null;
             for (let i = 0; i < keys.length; i++) {
-                await ksuExec(CTRL + " set " + keys[i] + " " + document.getElementById(ids[i]).value);
+                const el = document.getElementById(ids[i]);
+                el.classList.remove("invalid");
+                const v = validateNum(keys[i], el.value);
+                if (!v.ok) { el.classList.add("invalid"); bad = bad || v; }
+                values.push(v.ok ? v.n : null);
+            }
+            if (bad) { showToast("❌ " + bad.msg, 4500); return; }
+            const un = busyCtrl(btn);
+            if (btn) { btn.disabled = true; btn.innerText = "应用中..."; }
+            for (let i = 0; i < keys.length; i++) {
+                await ksuExec(CTRL + " set " + keys[i] + " " + values[i]);
             }
             if (btn) { btn.disabled = false; btn.innerText = "应用参数"; }
             un();
@@ -515,17 +641,41 @@
             setTimeout(refreshStatus, 500);
         }
 
+        const LOG_PLACEHOLDER = '<span class="log-empty">日志记录默认关闭。右上角开关打开后开始写入并实时显示；关闭后仍可查看历史日志。</span>';
+
         async function fetchLogs() {
             const box = document.getElementById("log-console");
             const res = await ksuExec(CTRL + " log 120");
             if (res.errno === 0) {
-                if (!logEnabled && !res.stdout.trim()) {
-                    box.innerHTML = '<span class="log-empty">日志记录默认关闭。右上角开关打开后开始写入并实时显示；关闭后仍可查看历史日志。</span>';
+                // 分段标题不算内容：日志关闭且各段都无历史记录时保持占位提示
+                const hasContent = (res.stdout || "").split("\n").some(l => {
+                    const t = l.trim();
+                    return t && !t.startsWith("=====") && !/^\(.*\)$/.test(t) && !t.startsWith("#");
+                });
+                if (!logEnabled && !hasContent) {
+                    box.innerHTML = LOG_PLACEHOLDER;
                     return;
                 }
-                renderLogs(res.stdout || "暂无日志记录。");
+                renderLogs(res.stdout || "");
             } else {
                 box.innerText = "加载日志失败: " + (res.stderr || "");
+            }
+        }
+
+        async function exportLogs() {
+            showToast("正在导出日志...");
+            const res = await ksuExec(CTRL + " export");
+            if (res.errno === 0 && res.stdout) {
+                let d;
+                try { d = JSON.parse(res.stdout); } catch (e) { showToast("导出结果解析失败", 4000); return; }
+                if (d.success) {
+                    const name = (d.path || "").split("/").pop();
+                    showToast("✅ 日志已保存到 内部存储/Download/" + name + "（" + Math.round((d.size || 0) / 1024) + " KB），可在文件管理器中查看", 6000);
+                } else {
+                    showToast("❌ 导出失败: " + (d.message || "未知错误"), 5000);
+                }
+            } else {
+                showToast("❌ 导出失败: " + (res.stderr || "未知错误"), 5000);
             }
         }
 
@@ -536,7 +686,8 @@
             lines.forEach(line => {
                 if (!line.trim()) return;
                 let cls = "";
-                if (line.includes("[TEST]")) cls = "log-line-test";
+                if (line.startsWith("=====")) cls = "log-line-section";
+                else if (line.includes("[TEST]")) cls = "log-line-test";
                 else if (line.includes("[STATUS]")) cls = "log-line-status";
                 else if (line.includes("[SYSTEM]")) cls = "log-line-system";
                 else if (line.includes("[WARN]") || line.includes("[ERROR]")) cls = "log-line-warn";
@@ -564,7 +715,12 @@
             refreshStatus();
             fetchLogs();
             setInterval(refreshStatus, 8000);
-            setInterval(fetchLogs, 10000);
+            // 日志轮询开销较大（含 logcat 采集），仅在记录开启时自动刷新；关闭时只加载一次占位
+            setInterval(() => { if (logEnabled) fetchLogs(); }, 10000);
+            // 输入时即时清掉非法红框
+            document.querySelectorAll(".param-grid input").forEach(el => {
+                el.addEventListener("input", () => el.classList.remove("invalid"));
+            });
         });
     </script>
 </body>

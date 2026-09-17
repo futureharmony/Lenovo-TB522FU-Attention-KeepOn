@@ -1,6 +1,6 @@
 id=tb522fu_attention_keepon
 name=Lenovo Y900 注视不熄屏增强 (WebUI)
-version=v1.8.6
-versionCode=186
+version=v1.8.1
+versionCode=181
 author=futureharmony
 description=为联想拯救者 Y900 (TB522FU) ColorOS 移植版启用原生硬件注视不熄屏。Camera 3 (OG0VE) AON FDPRO 硬件感知 + Demand Mode 按需判定，仅灭屏前 ~350ms 拉流。经 AOSP AttentionService 契约接管框架 provider（APK 声明 BIND_ATTENTION_SERVICE + 开机绑定 + 5 分钟漂移兜底），系统设置「注视时不熄屏」真正生效而非空转。纯 Magisk / KernelSU 集成，含 ADSP 崩溃熔断与开机失败自动回退。
