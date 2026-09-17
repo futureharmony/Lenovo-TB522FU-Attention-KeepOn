@@ -28,6 +28,7 @@ object AonLog {
     private val ring = ArrayDeque<String>()
     private var maxLines = 1000
     private var level = I
+    private var filesDirRef: File? = null
     private var logFile: File? = null
     private var bytesWritten = 0L
 
@@ -36,10 +37,27 @@ object AonLog {
     fun init(ctx: Context?, maxLinesCfg: Int, levelCfg: Int, toFile: Boolean) {
         maxLines = maxOf(200, maxLinesCfg)
         level = levelCfg
-        if (toFile && ctx != null) {
-            logFile = File(ctx.filesDir, "aon.log")
+        if (ctx != null) {
+            try { filesDirRef = ctx.filesDir } catch (_: Throwable) {}
         }
+        logFile = if (toFile) filesDirRef?.let { File(it, "aon.log") } else null
         i("LOG", "init maxLines=$maxLines level=$level file=$logFile")
+    }
+
+    /**
+     * Runtime file-logging switch (config `log_to_file`, mirrored from the module's
+     * `log_enabled` WebUI switch). Disabling keeps the in-memory ring + logcat alive;
+     * only the on-disk append stops — so crash forensics in-process are unaffected.
+     */
+    @JvmStatic
+    @Synchronized
+    fun setFileLogging(enabled: Boolean) {
+        if (enabled) {
+            val dir = filesDirRef ?: return
+            if (logFile == null) logFile = File(dir, "aon.log")
+        } else {
+            logFile = null
+        }
     }
 
     @JvmStatic fun d(tag: String, msg: String) = log(D, tag, msg)

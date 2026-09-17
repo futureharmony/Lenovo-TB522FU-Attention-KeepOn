@@ -50,21 +50,18 @@ if [ -d "$REG" ]; then
 fi
 
 if [ ! -f "$CONF_DIR/config.json" ]; then
-    ui_print "- 正在初始化默认配置 (默认开启注视保护)..."
-    echo "{\"enabled\": true, \"installed_at\": \"$(date "+%Y-%m-%d %H:%M:%S")\"}" > "$CONF_DIR/config.json"
+    ui_print "- 正在初始化默认配置 (默认开启注视保护、日志默认关闭)..."
+    echo "{\"enabled\": true, \"log_enabled\": false, \"installed_at\": \"$(date "+%Y-%m-%d %H:%M:%S")\"}" > "$CONF_DIR/config.json"
 fi
+# 旧版安装遗留的 overlay 副本与 App 端历史日志裁撤（幂等）
+rm -f "$CONF_DIR/aon_overlay.apk" "$CONF_DIR/aon_frameworkres_overlay.apk" 2>/dev/null || true
 
-# 3. 部署系统级 Framework-res 静态 RRO Overlay (供系统设置读取 config_defaultAttentionService)
-mkdir -p "$MODPATH/my_product/overlay" "$MODPATH/system/product/overlay" "$MODPATH/system/overlay" 2>/dev/null
-if [ -f "$MODPATH/aon_frameworkres_overlay.apk" ]; then
-    cp -f "$MODPATH/aon_frameworkres_overlay.apk" "$MODPATH/my_product/overlay/lwky.oplus.aon.frameworkres.overlay.product.apk" 2>/dev/null
-    cp -f "$MODPATH/aon_frameworkres_overlay.apk" "$MODPATH/system/product/overlay/lwky.oplus.aon.frameworkres.overlay.product.apk" 2>/dev/null
-    cp -f "$MODPATH/aon_frameworkres_overlay.apk" "$MODPATH/system/product/overlay/aon_frameworkres_overlay.apk" 2>/dev/null
-    cp -f "$MODPATH/aon_frameworkres_overlay.apk" "$MODPATH/system/overlay/aon_frameworkres_overlay.apk" 2>/dev/null
-    cp -f "$MODPATH/aon_frameworkres_overlay.apk" "$CONF_DIR/aon_overlay.apk" 2>/dev/null
-fi
-
-# 清理旧版 idmap 缓存，确保重启后由 post-fs-data 与 OMS 使用新 Overlay 生成
+# 3.（已裁撤）Framework-res 静态 RRO Overlay —— v1.8.6 移除。
+#    历史定案（attention_ctrl 头部注释 2026-09-17）：本 ROM 的 AttentionManagerService
+#    用 MATCH_SYSTEM_ONLY 解析框架资源 config_defaultAttentionService，普通 APK 永远
+#    不合格，且该 overlay 复用 ROM 原有包名（签名冲突）⇒ 从未生效。真实绑定链路 =
+#    `cmd attention setTestableAttentionService`（service.sh §7.6 + supervisor 兜底）。
+#    下方 resource-cache 清理保留一次发布周期，用于清掉旧版安装遗留的 aon idmap。
 rm -f /data/resource-cache/*aon* 2>/dev/null || true
 
 # 4. 安装 futureharmony.tb522fu.aon 后台感知服务应用

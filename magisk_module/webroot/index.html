@@ -230,6 +230,7 @@
         <span class="hero-desc">按需判定 · 注视续亮 · 平时零功耗</span>
         <span class="spacer"></span>
         <span class="chip" id="chip-svc" title="后台服务"><span class="dot"></span>服务 <b id="chip-svc-v">-</b></span>
+        <span class="chip" id="chip-bind" title="框架 AttentionService 契约绑定态"><span class="dot"></span>绑定 <b id="chip-bind-v">-</b></span>
         <span class="chip" id="chip-stream" title="AON 流注册态"><span class="dot"></span>流 <b id="chip-stream-v">-</b></span>
         <span class="chip" id="chip-screen" title="屏幕状态"><span class="dot"></span>屏 <b id="chip-screen-v">-</b></span>
         <span class="chip" id="chip-cur" title="电池电流"><span class="dot"></span><b id="chip-cur-v">-</b></span>
@@ -268,7 +269,7 @@
                     <div class="row-hint">关 = 检测到人脸即续亮</div>
                 </div>
                 <label class="switch-wrapper">
-                    <input type="checkbox" id="gaze-toggle" class="switch-input" onchange="setCfg('require_gaze', this.checked)">
+                    <input type="checkbox" id="gaze-toggle" class="switch-input" onchange="setCfg('require_gaze', this.checked, this)">
                     <span class="switch-slider"></span>
                 </label>
             </div>
@@ -309,14 +310,21 @@
         <!-- 日志 -->
         <div class="card log-card">
             <div class="log-header">
-                <div class="card-title" style="margin:0;">📋 运行日志</div>
+                <div class="card-title" style="margin:0;display:flex;align-items:center;gap:8px;">📋 运行日志
+                    <label class="log-switch" title="日志记录开关（默认关闭，开启后 attention.log 与 App 端 aon.log 才会写入）">
+                        <input type="checkbox" id="log-toggle" class="switch-input" onchange="onLogToggle(this.checked)">
+                        <span class="switch-slider"></span>
+                    </label>
+                    <span class="card-desc" id="log-toggle-hint">记录关</span>
+                </div>
                 <div class="log-actions">
                     <label><input type="checkbox" id="autoscroll" checked style="accent-color:var(--blue);"> 自动滚动</label>
                     <button class="btn" style="padding:4px 10px;font-size:10.5px;" onclick="fetchLogs()">🔄</button>
                     <button class="btn" style="padding:4px 10px;font-size:10.5px;" onclick="clearLogs()">🗑️</button>
                 </div>
             </div>
-            <div id="log-console" class="log-box">正在加载运行日志...</div>
+            <div id="log-banner" class="log-banner">⚠️ 日志记录中 —— 持续写入会占用存储，排查完成后请回到此处关闭「记录」开关</div>
+            <div id="log-console" class="log-box"><span class="log-empty">日志记录默认关闭。右上角开关打开后开始写入并实时显示；关闭后仍可查看历史日志。</span></div>
         </div>
     </div>
 
@@ -387,6 +395,13 @@
             const cur = Number(d.battery_current_ua || 0);
             setChip("chip-cur", false, (Math.abs(cur) / 1000).toFixed(0) + " mA");
 
+            // 日志开关状态同步（不反向覆盖正在操作的开关）
+            logEnabled = (d.log_enabled === true);
+            const lt = document.getElementById("log-toggle");
+            if (document.activeElement !== lt) lt.checked = logEnabled;
+            document.getElementById("log-toggle-hint").innerText = logEnabled ? "记录开" : "记录关";
+            document.getElementById("log-banner").classList.toggle("show", logEnabled);
+
             // sync controls (only when not focused to avoid fighting the user)
             const dt = document.getElementById("demand-toggle");
             if (document.activeElement !== dt) dt.checked = (d.demand_mode === true);
@@ -406,24 +421,49 @@
         }
 
         async function onToggleChange(enabled) {
+            const un = busyCtrl(document.getElementById("master-toggle"));
             showToast(enabled ? "正在开启注视不熄屏..." : "正在关闭功能...");
             const res = await ksuExec(CTRL + " " + (enabled ? "on" : "off"));
+            un();
             if (res.errno === 0) {
                 showToast(enabled ? "✅ 已开启" : "⚪ 已关闭");
                 setTimeout(refreshStatus, 600);
-                setTimeout(fetchLogs, 800);
+                if (logEnabled) setTimeout(fetchLogs, 800);
             } else {
                 showToast("❌ 切换失败: " + (res.stderr || "未知错误"));
+                document.getElementById("master-toggle").checked = !enabled;
             }
         }
 
-        async function setCfg(key, value) {
+        async function setCfg(key, value, ctrl) {
+            const un = busyCtrl(ctrl || null);
             const res = await ksuExec(CTRL + " set " + key + " " + value);
+            un();
             if (res.errno === 0) {
                 showToast("已应用: " + key + " = " + value);
                 setTimeout(refreshStatus, 500);
             } else {
                 showToast("❌ 设置失败: " + (res.stderr || "未知错误"));
+                setTimeout(refreshStatus, 300);   // 回读真实值，回滚 UI
+            }
+        }
+
+        async function onLogToggle(enabled) {
+            const res = await ksuExec(CTRL + " set log_enabled " + enabled);
+            if (res.errno === 0) {
+                logEnabled = enabled;
+                document.getElementById("log-toggle-hint").innerText = enabled ? "记录开" : "记录关";
+                document.getElementById("log-banner").classList.toggle("show", enabled);
+                if (enabled) {
+                    showToast("日志记录已开启");
+                    fetchLogs();
+                } else {
+                    showToast("日志记录已关闭");
+                }
+                setTimeout(refreshStatus, 500);
+            } else {
+                showToast("❌ 切换失败: " + (res.stderr || "未知错误"));
+                document.getElementById("log-toggle").checked = !enabled;
             }
         }
 
@@ -432,12 +472,20 @@
             const line = document.getElementById("test-line");
 
             btn.disabled = true;
-            btn.innerText = "⏳ ≤8s";
+            btn.classList.add("loading");
+            btn.innerHTML = '<span class="spinner"></span>测试中 <span id="test-elapsed">0</span>s';
             line.style.display = "block";
-            line.innerText = "正在注册 AON 流并等待 EVT 帧...";
+            line.innerText = "正在注册 AON 流并等待 EVT 帧（常规 2~4s，冷启动最长 ~30s）...";
+            const t0 = Date.now();
+            const timer = setInterval(() => {
+                const el = document.getElementById("test-elapsed");
+                if (el) el.innerText = Math.round((Date.now() - t0) / 1000);
+            }, 500);
 
             const res = await ksuExec(CTRL + " test");
+            clearInterval(timer);
             btn.disabled = false;
+            btn.classList.remove("loading");
             btn.innerText = "⚡ 测试";
 
             if (res.errno === 0 && res.stdout) {
@@ -447,18 +495,22 @@
                     " · " + (d.elapsedMs || "-") + "ms · mask " + (d.detail ? d.detail.split(" ")[0] : "-") +
                     " · " + (d.gaze ? "注视中" : (d.code === 1 ? "在场" : "-"));
                 showToast("测试完成: " + d.resultName);
-                fetchLogs();
+                if (logEnabled) fetchLogs();
             } else {
                 line.innerText = "测试失败: " + (res.stderr || "超时");
             }
         }
 
-        async function applyParams() {
+        async function applyParams(btn) {
+            const un = busyCtrl(btn);
+            if (btn) { btn.disabled = true; btn.innerText = "应用中..."; }
             const keys = ["aon_evt_mask", "aon_algo", "aon_width", "aon_height", "aon_dps"];
             const ids = ["p-mask", "p-algo", "p-width", "p-height", "p-dps"];
             for (let i = 0; i < keys.length; i++) {
                 await ksuExec(CTRL + " set " + keys[i] + " " + document.getElementById(ids[i]).value);
             }
+            if (btn) { btn.disabled = false; btn.innerText = "应用参数"; }
+            un();
             showToast("参数已应用");
             setTimeout(refreshStatus, 500);
         }
@@ -467,6 +519,10 @@
             const box = document.getElementById("log-console");
             const res = await ksuExec(CTRL + " log 120");
             if (res.errno === 0) {
+                if (!logEnabled && !res.stdout.trim()) {
+                    box.innerHTML = '<span class="log-empty">日志记录默认关闭。右上角开关打开后开始写入并实时显示；关闭后仍可查看历史日志。</span>';
+                    return;
+                }
                 renderLogs(res.stdout || "暂无日志记录。");
             } else {
                 box.innerText = "加载日志失败: " + (res.stderr || "");

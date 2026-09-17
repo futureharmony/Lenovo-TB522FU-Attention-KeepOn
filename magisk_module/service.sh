@@ -18,6 +18,10 @@ MODDIR="/data/adb/modules/tb522fu_attention_keepon"
 
 mkdir -p "$CONF_DIR" 2>/dev/null
 
+# 常规日志开关（config.json log_enabled，默认 false；WebUI「记录」开关管控）。
+# 安全关键行（§1.5 ROLLBACK 等）始终写入，不走本判定。
+log_on() { grep -oq '"log_enabled"[[:space:]]*:[[:space:]]*true' "$CONF_FILE" 2>/dev/null; }
+
 # 1.5 开机失败自动回退：走到这里 = 本机成功 boot_completed，回退计数窗口重置。
 #     （计数逻辑见 post-fs-data.sh §0；连续 3 次开机失败时模块已自我禁用，
 #      不会再进本脚本，还原动作由 service.d/tb522fu_rollback_cleanup.sh 接管。）
@@ -40,7 +44,7 @@ pkill -9 -f "aon_watchdog" 2>/dev/null || true
 pkill -9 -f "aon_daemon" 2>/dev/null || true  # 单实例：清掉本模块旧 daemon，下方重拉
 
 rm -f /data/adb/tb522fu_attention/aon_watchdog.sh 2>/dev/null || true
-echo "[$(date '+%F %T')] [SYSTEM] legacy lwky AON service neutralized" >> "$LOG_FILE" 2>/dev/null || true
+log_on && echo "[$(date '+%F %T')] [SYSTEM] legacy lwky AON service neutralized" >> "$LOG_FILE" 2>/dev/null || true
 
 # 2.5 island registry 漂移自检（防 SSC 回写 is_island 漂回 1；post-fs-data §3
 #     已做过修正，此处为二次防线——发现漂移则立即重修并告警）
@@ -122,7 +126,7 @@ if [ -f "$MODDIR/aon_daemon.bin" ]; then
         nohup "$MODDIR/aon_daemon.bin" --daemon \
             "$AON_DIR/aon_cmd" "$AON_DIR/aon_evt" \
             0 1 15 2 480 360 3 </dev/null >/dev/null 2>&1 &
-        echo "[$(date '+%F %T')] [AON-ULP] Camera 3 AON hardware daemon started (algo=2 480x360 non-island)" >> "$LOG_FILE" 2>/dev/null || true
+        log_on && echo "[$(date '+%F %T')] [AON-ULP] Camera 3 AON hardware daemon started (algo=2 480x360 non-island)" >> "$LOG_FILE" 2>/dev/null || true
     fi
 fi
 
@@ -150,8 +154,11 @@ if [ "$(grep -o '"enabled"[[:space:]]*:[[:space:]]*true' "$CONF_FILE" 2>/dev/nul
     #     不读。必须用 shell 钩子 cmd attention setTestableAttentionService 改写解析
     #     目标（该路径不做 system-only 过滤）。覆盖是内存态 ⇒ 每次开机都要重绑，
     #     运行期漂移由 supervisor.sh 兜底。详见 attention_ctrl 头部注释。
-    [ -x "$MODDIR/system/bin/attention_ctrl" ] && \
+    if log_on; then
         sh "$MODDIR/system/bin/attention_ctrl" bind >>"$LOG_FILE" 2>&1 || true
+    else
+        sh "$MODDIR/system/bin/attention_ctrl" bind >/dev/null 2>&1 || true
+    fi
 fi
 
 

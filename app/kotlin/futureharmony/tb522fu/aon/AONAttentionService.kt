@@ -56,6 +56,8 @@ class AONAttentionService : AttentionService() {
         // leave the service without a foreground entry.
         enterForeground()
         config = AonConfig.get(this) {
+            // config 变更联动：log_to_file（模块 WebUI log_enabled 的镜像）热切换
+            AonLog.setFileLogging(config.logToFile)
             AonLog.i("SVC", "config changed; syncing controller state")
             syncState()
         }

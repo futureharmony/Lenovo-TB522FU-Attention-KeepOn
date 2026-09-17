@@ -44,6 +44,13 @@ LAST_RESPAWN=0
 TICK=0                      # 主循环计数：框架 provider 漂移核验按此节流（见循环内）
 
 log() { echo "[$(date '+%F %T')] $1" >> "$LOG" 2>/dev/null || true; }
+# 常规日志走 logx（受 config.json log_enabled 管控，默认关）；FUSE 熔断等
+# 安全关键行直接用 log()，不受开关影响（宁可多一行也不能丢熔断证据）。
+logx() {
+    LE=$(sed -n 's/.*"log_enabled"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p' "$CONF" 2>/dev/null)
+    [ "$LE" = "true" ] && log "$1"
+    return 0
+}
 
 ##########################################################################################
 # 单实例锁
@@ -84,12 +91,12 @@ cleanup() { rm -rf "$LOCKDIR" 2>/dev/null; }
 mkdir -p "$CONF_DIR" 2>/dev/null
 
 if ! acquire_lock; then
-    log "[SUPERVISOR] duplicate instance detected, self-exit (pid=$$)"
+    logx "[SUPERVISOR] duplicate instance detected, self-exit (pid=$$)"
     exit 0
 fi
 trap cleanup EXIT INT TERM HUP
 
-log "[SUPERVISOR] v3 started (pid=$$, cmd=$CMD_FILE)"
+logx "[SUPERVISOR] v3 started (pid=$$, cmd=$CMD_FILE)"
 
 while true; do
     sleep 15
@@ -130,7 +137,7 @@ while true; do
     if ! pidof "$PKG:attention" >/dev/null 2>&1 && \
        ! pidof "$PKG" >/dev/null 2>&1; then
         am start-foreground-service -n "$PKG/.AONAttentionService" >/dev/null 2>&1 || true
-        log "[SUPERVISOR] attention service respawned"
+        logx "[SUPERVISOR] attention service respawned"
     fi
 
     # ---- 契约与设置巡检（防被系统静默重置）----
@@ -158,7 +165,7 @@ while true; do
             "$PKG"/*) ;;
             *)
                 cmd attention setTestableAttentionService "$PKG" >/dev/null 2>&1 || true
-                log "[SUPERVISOR] framework provider drifted ('${_bc:-none}') -> rebind to $PKG"
+                logx "[SUPERVISOR] framework provider drifted ('${_bc:-none}') -> rebind to $PKG"
                 ;;
         esac
     fi
@@ -173,9 +180,9 @@ while true; do
                 nohup "$MODDIR/aon_daemon.bin" --daemon \
                     "$CMD_FILE" "$EVT_FILE" \
                     0 1 15 2 480 360 3 </dev/null >/dev/null 2>&1 &
-                log "[SUPERVISOR] aon_daemon respawned (algo=2 480x360 non-island)"
+                logx "[SUPERVISOR] aon_daemon respawned (algo=2 480x360 non-island)"
             else
-                log "[SUPERVISOR] aon_daemon.bin not executable/missing, cannot respawn"
+                logx "[SUPERVISOR] aon_daemon.bin not executable/missing, cannot respawn"
             fi
         fi
     fi
