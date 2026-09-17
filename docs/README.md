@@ -16,6 +16,7 @@
 | 这个故障到底是什么、怎么修的 | [`PROJECT_HISTORY.md`](PROJECT_HISTORY.md) |
 | 有哪些**曾经写对、后来被推翻**的结论 | [`PROJECT_HISTORY.md`](PROJECT_HISTORY.md) §8（18 条） |
 | 逆向 / 取证时哪些判据会骗人 | [`PITFALLS.md`](PITFALLS.md) |
+| 自检按钮 `attention_ctrl test` 为什么会假报"无事件" | [`PITFALLS.md`](PITFALLS.md) §19 |
 | 为什么不能启用固件的"岛"（island）路径 | [`PROJECT_HISTORY.md`](PROJECT_HISTORY.md) §3 |
 | 联想原厂方案和本模块谁更好 | [`github_module_vs_native_verdict_20260917.md`](github_module_vs_native_verdict_20260917.md) |
 | 原厂 ROM 为什么"不崩" | [`zux_attentive_display_why_not_crash_verdict_20260917.md`](zux_attentive_display_why_not_crash_verdict_20260917.md) |

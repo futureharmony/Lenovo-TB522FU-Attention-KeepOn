@@ -112,9 +112,15 @@ build_zip.sh          # 模块打包（版本号从 module.prop 单一来源读�
 当前版本以 [`magisk_module/module.prop`](magisk_module/module.prop) 的 `version` 为**唯一来源**
 （`build_zip.sh` 与 CI 均从此读取，不再硬编码）。近期变更：
 
+- **v1.8.2** —— 修正 `attention_ctrl test` 的**假阴性**（曾报「无事件（流未出帧）」而实际流是通的）。三个独立缺陷：① 新帧判据用「`aon_evt` 文件变大」，但 **daemon 启动会重写该文件**（实测 55804 B → 61 B、`EVT` 1534 → 0），窗口跨越一次 daemon 重启即必然误报 —— 现改为检测到 size 回落即 **re-baseline** 并继续等待；② 8 s 窗口太短（AON 客户端交接后首次 `state=start` 偶发不生效），现为 20 s + 零帧**重发一次 start** 再等 10 s；③ 「流是否已在跑」原按 `HBT` 心跳的 `st` 判定，而 `HBT` 每 5 s 一条且滞后、热流下 `tail -n 20` 可能一条都取不到 —— 现改为「2 s 内是否**新增 EVT 行**」（心跳只写 `HBT`，故不能比文件大小）。另修正收尾语义：只在 `test` 自己拉起流时才 `stop`，且重试分支也计入（否则流会一直挂着）。
 - **v1.8.1** —— 修复 `supervisor.sh` 重拉 daemon 时 IPC 路径与其余组件不一致导致的**控制面静默失联**（路径统一到 app files 目录）；`is_island` 修复范围由 4 个模型扩展到**全部 `nms_*` 模型**；supervisor 增加单实例锁（toybox 无 `flock`，用 `mkdir` 原子锁实现）与 **≥20 s 重拉退避**（AON 客户端是单占用资源，紧邻重拉必失败）。
 - **v1.8.0** —— `attention_ctrl` 命令改为完整协议 `state=start <camIdx> <srv> <mask> <algo> <w> <h> <dps> seq=<ms>`；此前发裸 `start` 与 daemon「内容变化才处理」的语义打不出配合，表现为 `test` 长期返回 `ABSENT`。
 - **v1.7** —— `is_island=0` 终态修复，关闭 ADSP 崩溃循环（根因见 `docs/PROJECT_HISTORY.md` §3）。
 - **v1.6** —— 强制 `algo=2 / 480×360`（非岛模式），修复回调解析错位，daemon 内置 SSC 断连自愈。
 
-> 发版：CI 校验 `tag` 必须与 `module.prop` 的 `version` **完全一致**（如 `v1.8.1`），否则 release job 失败。
+> 发版：CI 校验 `tag` 必须与 `module.prop` 的 `version` **完全一致**（如 `v1.8.2`），否则 release job 失败。
+>
+> ⚠️ **发版前先处理两个幽灵 tag**：远端曾出现 `v1.9` / `v1.9.1`，它们指向**与 `main` 无关的孤立提交**、
+> 内容**比 `main` 旧**（`is_island` 一个都没修），却会被 GitHub Releases 页显示成 "Latest"。
+> 二选一：先 `git push --delete origin v1.9 v1.9.1` 再按 `v1.8.2` 发；或把版本号直接跳到 `v1.9.2`
+> 承认该号段。`git ls-remote` 能读远端 ≠ 有写权限（公开仓库匿名只读也成功）。

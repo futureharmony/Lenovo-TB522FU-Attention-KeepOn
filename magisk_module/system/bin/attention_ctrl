@@ -9,7 +9,7 @@
 #   set <key> <value>    update config.json (key-preserving) + push secure mirror
 #                        keys: require_gaze gaze_grace_ms demand_mode demand_dwell_ms
 #                              aon_evt_mask aon_algo aon_width aon_height aon_dps
-#   test                 real single-shot detection: ensure stream, read EVT, restore
+#   test                 real single-shot detection: ensure stream, wait new EVT, restore
 #   log [n] / clear_log
 ##########################################################################################
 
@@ -87,10 +87,33 @@ daemon_alive() {
 }
 
 # Last HBT registration state: st=0 unregistered, st=1 registered
+# ⚠️ HBT 每 ~5 s 一条，而事件峰值可达 ~30/s ⇒ 「最后 20 行」在热流下常常一条 HBT 都没有，
+#    会把**正在跑的流误判为停**（实测：空闲时 20 行里 20 条 HBT；热流时可能 0 条）。
+#    故取**有界尾块** 8 KB（≈5~8 条 HBT）。另注意 HBT 最多滞后 5 s。
 stream_registered() {
     [ -f "$EVT_FILE" ] || { echo 0; return; }
-    local st=$(tail -n 20 "$EVT_FILE" 2>/dev/null | grep '^HBT' | tail -n1 | sed 's/.*st=\([0-9]*\).*/\1/')
+    local st=$(tail -c 8192 "$EVT_FILE" 2>/dev/null | grep '^HBT' | tail -n1 | sed 's/.*st=\([0-9]*\).*/\1/')
     echo "${st:-0}"
+}
+
+evt_size() { stat -c %s "$EVT_FILE" 2>/dev/null || echo 0; }
+evt_count() { grep -c '^EVT' "$EVT_FILE" 2>/dev/null || echo 0; }
+
+# 流是否真在**出事件**：<秒> s 内 aon_evt 是否新增了 EVT 行。
+# ⚠️ 三条都不能用作判据：
+#   ① HBT 的 st/rep —— 每 ~5 s 一条且有 ≤5 s 滞后；
+#   ② 文件大小增量 —— **daemon 每 5 s 写一条 HBT 心跳，流没注册时文件照样在长**
+#      （V2 实测：空闲态被误判为"在跑"，白等 20 s 才靠重试兜住）；
+#   ③ EVT 行数的全文件 `grep -c` —— 能用但是 O(文件大小)。
+# 这里只对「新增的那段字节」数 EVT 行（tail 会 seek，代价 O(增量)）。
+evt_growing() {  # evt_growing <seconds>
+    local s="${1:-2}" a b d
+    a=$(evt_size)
+    sleep "$s"
+    b=$(evt_size)
+    [ "$b" -le "$a" ] && { echo 0; return; }   # 没长 / 被重写(新会话) 都算"没在跑"
+    d=$(tail -c +$((a + 1)) "$EVT_FILE" 2>/dev/null | grep -c '^EVT')
+    [ "${d:-0}" -gt 0 ] && echo 1 || echo 0
 }
 
 battery_now_ua() {
@@ -229,36 +252,65 @@ cmd_set() {
 # ------------------------------------------- test ----------------------------------
 
 # Real single-shot detection: make sure the daemon stream is registered, capture
-# new EVT lines for up to 8s, judge mask bits, then restore the prior state.
+# new EVT lines, judge mask bits, then restore the prior state.
+#
+# 判据演进（2026-09-17，实机复现假阴性后重写）：
+#   ① 「文件大小增量」不能单独当判据 —— **daemon 启动会重写 aon_evt**
+#      （实测冷 daemon 起来后 55804 B → 61 B、EVT 1534 → 0）。若窗口跨越一次 daemon
+#      重启，`sz1 > sz0` 恒假 ⇒ 必然假报「无事件（流未出帧）」。现在发现 size 回落即
+#      视为会话重启、基准归零（整份文件都是新写的）。
+#   ② 8 s 窗口太短：常规冷启出帧仅 ~1~2 s，但 AON 客户端交接后首次 start 偶发不生效
+#      （见 PITFALLS 24）。现为 20 s，且零帧时**重发一次 state=start** 再等 20 s。
+#   ③ 「流是否已在跑」不再看 HBT 的 st（稀疏 + 滞后），改为 2 s 内 aon_evt 是否
+#      **新增 EVT 行**（daemon 每 5 s 写 HBT 心跳 ⇒ 不能比文件大小）。
+#   ④ 恢复语义：只在本函数**自己拉起**流时才 stop，避免误停框架/app 正在用的流。
+#      ⚠️ 重试分支发了 start 就必须置 `started=1`，否则流会一直挂着不恢复。
 cmd_test() {
     if [ "$(daemon_alive)" != "true" ]; then
         echo "{\"success\":false,\"code\":-1,\"resultName\":\"AON 守护进程未运行\",\"detail\":\"请重启模块或检查 service.sh\"}"
         exit 0
     fi
 
-    local prev_st=$(stream_registered)
-    local sz0=$(stat -c %s "$EVT_FILE" 2>/dev/null || echo 0)
     local t0=$(uptime_ms)
-
-    if [ "$prev_st" != "1" ]; then
+    local prev_st=$(stream_registered)
+    local started=0
+    if [ "$(evt_growing 2)" != "1" ]; then
         cmd_start
-        log_message "TEST" "test: stream was down -> registering (state=start)"
+        started=1
+        log_message "TEST" "test: no EVT for 2s (hbt st=$prev_st) -> registering (state=start)"
     fi
 
-    local found=""
-    local i=0
-    while [ $i -lt 40 ]; do   # 40 x 200ms = 8s
-        sleep 0.2
-        local sz1=$(stat -c %s "$EVT_FILE" 2>/dev/null || echo 0)
-        if [ "$sz1" -gt "$sz0" ]; then
-            found=$(tail -c +$((sz0 + 1)) "$EVT_FILE" 2>/dev/null | grep '^EVT' | tail -n1)
-            case "$found" in
-                *"EVT b=1 "*) break ;;
-                *"EVT pres=0"*) sz0=$sz1 ;;  # keep waiting for a b=1 frame
-            esac
+    local found="" fallback="" attempts=0 i=0 sz0=0 sz1=0 delta=""
+    local window=100   # 首轮 100 x 200ms = 20s，重试轮 50 x 200ms = 10s（总上限 ~32s）
+    while [ "$attempts" -lt 2 ] && [ -z "$found" ]; do
+        attempts=$((attempts + 1))
+        [ "$attempts" -gt 1 ] && window=50
+        sz0=$(evt_size)
+        i=0
+        while [ "$i" -lt "$window" ] && [ -z "$found" ]; do
+            sleep 0.2
+            sz1=$(evt_size)
+            if [ "$sz1" -lt "$sz0" ]; then
+                log_message "TEST" "test: aon_evt rewritten (${sz0} -> ${sz1}), re-baseline"
+                sz0=0       # daemon 重写文件：整份内容都属新会话
+            fi
+            if [ "$sz1" -gt "$sz0" ]; then
+                delta=$(tail -c +$((sz0 + 1)) "$EVT_FILE" 2>/dev/null)
+                found=$(echo "$delta" | grep '^EVT b=1 ' | tail -n1)
+                if [ -z "$found" ]; then
+                    [ -z "$fallback" ] && fallback=$(echo "$delta" | grep '^EVT pres=0' | tail -n1)
+                    sz0=$sz1   # 只见 STARTING / pres=0 之类，抬高基准继续等 b=1 帧
+                fi
+            fi
+            i=$((i + 1))
+        done
+        if [ -z "$found" ] && [ "$attempts" -lt 2 ]; then
+            cmd_start
+            started=1       # ⚠️ 必须置位：否则重试拉起的流在收尾时不会被 stop（流会一直挂着）
+            log_message "TEST" "test: no EVT after $((i * 200))ms (file EVT=$(evt_count)), retrying (state=start)"
         fi
-        i=$((i + 1))
     done
+    [ -z "$found" ] && found="$fallback"
 
     local elapsed=$(( $(uptime_ms) - t0 ))
     local code=-1 name="无事件（流未出帧）" mask=0 gaze=false detail=""
@@ -266,10 +318,11 @@ cmd_test() {
         *"EVT b=1 "*)
             local vals=$(echo "$found" | sed 's/.*vals=//' | tr -d '\r')
             mask=$(echo "$vals" | cut -d, -f1)
+            case "$mask" in ''|*[!0-9]*) mask=0 ;; esac
             gaze=false
             [ $((mask & 4)) -ne 0 ] && gaze=true
             if [ $((mask & 1)) -ne 0 ]; then
-                code=1; name="PRESENT（检测到人脸）"
+                code=1
                 $gaze && name="PRESENT（注视屏幕）" || name="PRESENT（在场，未注视）"
             else
                 code=0; name="ABSENT（未检测到人脸）"
@@ -277,17 +330,17 @@ cmd_test() {
             detail="mask=0x$(printf '%x' "$mask") vals=$vals"
             ;;
         *"EVT pres=0"*)
-            code=0; name="ABSENT（未检测到人脸）"
+            code=0; name="ABSENT（未检测到人脸）"; detail="pres=0（会话起始标记）"
             ;;
     esac
 
-    # Restore prior state: if the stream was down before the test, stop it again
+    # Restore prior state: only stop the stream if *this test* was what started it
     # (demand mode keeps it down between framework checks).
-    if [ "$prev_st" != "1" ]; then
+    if [ "$started" = "1" ]; then
         cmd_stop
         log_message "TEST" "test: restoring stream down (state=stop)"
     fi
-    log_message "TEST" "test result: code=$code $name elapsed=${elapsed}ms $detail"
+    log_message "TEST" "test result: code=$code $name elapsed=${elapsed}ms attempts=$attempts startedByTest=$started $detail"
 
     cat << EOF
 {
@@ -297,6 +350,8 @@ cmd_test() {
   "elapsedMs": $elapsed,
   "mask": $mask,
   "gaze": $gaze,
+  "attempts": $attempts,
+  "startedByTest": $([ "$started" = "1" ] && echo true || echo false),
   "detail": "$detail",
   "action": "$([ $code = 1 ] && echo 检测到在场 / 注视 || echo 未检测到人脸)"
 }
