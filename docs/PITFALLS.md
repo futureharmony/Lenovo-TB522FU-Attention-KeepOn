@@ -145,3 +145,24 @@
     ✅ 有效做法：用 `sed` 把 `attention_ctrl` 的 `AON_DIR` 一行改指到 **mock 目录**，用假 `aon_evt`
     **精确编排时序**（心跳期 → 重写 → 出帧），即可 100% 走到该分支，且完全不碰真机状态。
     脚本：`aon_rootcause/scripts/v182_v3c_mock.sh`。**"没压到分支"≠"分支没问题"**。
+
+30. ⚠️ **模块 `system/` 是「开机时快照」—— 改 `system/bin/*` 必须重启才生效**（2026-09-17 实测闭环）：
+    模块的 `system/` 树**不是**活动文件的 bind mount，而是**只读 overlay 的 lowerdir**：
+
+    ```
+    KSU on /system/bin type overlay (ro,seclabel,relatime,
+      lowerdir=/mnt/<id>/<id>/<mod>/system/bin:/system/bin,redirect_dir=on)
+    ```
+
+    - **实测**：把新 `attention_ctrl`（md5 `1f3a2122…`）覆盖进模块目录后，`/system/bin/attention_ctrl`
+      仍解析到**开机快照的旧 inode**（md5 `ec918348…`）；`cp` 进 `/system/bin/` 直接报
+      **`Read-only file system`** —— 运行期无解。
+    - **影响面**：**WebUI 的「立即测试」调的就是 `/system/bin/attention_ctrl`** ⇒ 改 `system/bin/*`
+      后不重启，UI 跑的还是旧代码。而 `service.sh` / `post-fs-data.sh` 由管理器直接执行，
+      改完**立即**生效，不受此限。⇒ 凡是"必须下次开机前就生效"的东西，要显式调用**模块目录副本**
+      （`/data/adb/modules/<mod>/system/bin/<tool>`）来验证。
+    - **验收口径**：重启后双侧 `md5sum` 必须相等，才算"部署完成"。复验脚本
+      `aon_rootcause/scripts/v182_postreboot_verify.sh`：P0 断言覆盖层一致性（两侧 md5 相等），
+      P1~P3 用 **`/system/bin` 路径**（= WebUI 的真实调用路径）跑冷/空闲/热三类 `test`，P4 看 ADSP 健康。
+      2026-09-17 实测结果：P0 PASS（两侧 `1f3a2122`）、P1 冷路径 ×2 = 4300 / 4050 ms、
+      P2 空闲 2370 ms、P3 热流 2340 ms 且 `startedByTest=false`（未误停）、ramdump 7 份无新增、`PD_ERR=0`。
