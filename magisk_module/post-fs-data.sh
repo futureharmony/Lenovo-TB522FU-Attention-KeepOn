@@ -5,7 +5,7 @@
 ##########################################################################################
 
 ##########################################################################################
-# 0. 开机失败自动回退（bootloop guard, v1.9）
+# 0. 开机失败自动回退（bootloop guard）
 #    规则：每次开机 post-fs-data 阶段计数 +1；service.sh 在 boot_completed 后清零。
 #    连续计数达到阈值 = 连续开机失败（卡死在 boot_completed 之前），立即：
 #      1) 触碰 disable 标志 → 下一周期起本模块不再被管理器加载；
@@ -71,9 +71,17 @@ while [ $_try -lt 20 ] && [ ! -d "$REG" ]; do
     sleep 1; _try=$((_try+1))
 done
 if [ -d "$REG" ]; then
-    for _m in nms_eod nms_fd_qqvga nms_fd_qvga nms_qrcode; do
-        _f="$REG/qsh_camera_common.json.qsh_camera.tuning_params.$_m"
+    # 覆盖范围用通配符而非硬编码模型名。本 ROM 的 registry 中实际存在 6 个 nms_* 模型：
+    #   nms_eod / nms_fd_qqvga / nms_fd_qvga / nms_fd_360p / nms_hd / nms_qrcode
+    # 历史版本（≤ v1.8.0）只列了 eod/fd_qqvga/fd_qvga/qrcode 4 个，漏掉 nms_fd_360p 与
+    # nms_hd —— 设备实测这两个当前为 0（从未被本模块改过，即出厂即 0），故未造成故障；
+    # 但"覆盖不完整"意味着它们一旦被 OTA / SSC 回写为 1，漂移自检也发现不了。
+    # 岛路径的损坏是**全局性**的（岛代码 436/436 出站调用跨段 ⇒ 对所有 NMS 模型同样致命），
+    # 因此把任意 nms_* 的 is_island 归零都是必要且安全的；通配遍历还能让厂商将来新增
+    # 模型时自动纳入保护，无需再改本文件。
+    for _f in "$REG"/qsh_camera_common.json.qsh_camera.tuning_params.nms_*; do
         [ -f "$_f" ] || continue
+        _m="${_f##*tuning_params.}"
         if grep -q "$ISLAND_OLD" "$_f" 2>/dev/null; then
             sed "s/$ISLAND_OLD/$ISLAND_NEW/" "$_f" > /data/adb/tb522fu_attention/.island_tmp \
                 && cat /data/adb/tb522fu_attention/.island_tmp > "$_f"   # cat 原地覆盖，保留 system:system 0600

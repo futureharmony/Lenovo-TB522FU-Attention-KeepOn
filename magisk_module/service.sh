@@ -48,9 +48,11 @@ REG="/mnt/vendor/persist/sensors/registry/registry"
 ISLAND_OLD='"is_island":{"type":"int","ver":"0","data":"1"}'
 ISLAND_NEW='"is_island":{"type":"int","ver":"0","data":"0"}'
 if [ -d "$REG" ]; then
-    for _m in nms_eod nms_fd_qqvga nms_fd_qvga nms_qrcode; do
-        _f="$REG/qsh_camera_common.json.qsh_camera.tuning_params.$_m"
+    # 通配遍历全部 nms_* 模型（见 post-fs-data.sh §3 的说明：本 ROM 实有 6 个，
+    # 硬编码 4 个会漏掉 nms_fd_360p / nms_hd）。
+    for _f in "$REG"/qsh_camera_common.json.qsh_camera.tuning_params.nms_*; do
         [ -f "$_f" ] || continue
+        _m="${_f##*tuning_params.}"
         if grep -q "$ISLAND_OLD" "$_f" 2>/dev/null; then
             sed "s/$ISLAND_OLD/$ISLAND_NEW/" "$_f" > /data/adb/tb522fu_attention/.island_tmp \
                 && cat /data/adb/tb522fu_attention/.island_tmp > "$_f"
@@ -65,6 +67,10 @@ if [ ! -f "$CONF_FILE" ]; then
     echo "{\"enabled\": true, \"installed_at\": \"$(date "+%Y-%m-%d %H:%M:%S")\"}" > "$CONF_FILE"
 fi
 
+# ⚠️ AON_DIR / cmd / evt 三处路径必须与 supervisor.sh 顶部同源！
+#    daemon 由本脚本与 supervisor.sh 二者之一拉起，谁先拉起谁决定 IPC 路径；
+#    若两处不一致，被 supervisor 拉起的 daemon 收不到 app 写进 app 路径的命令，
+#    功能会「开着但完全不工作」且不留任何日志（v1.8.0 及以前的实际缺陷）。
 AON_DIR="/data/data/futureharmony.tb522fu.aon/files"
 mkdir -p "$AON_DIR" 2>/dev/null
 chmod 777 "$AON_DIR" 2>/dev/null || true

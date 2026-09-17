@@ -30,7 +30,7 @@
 2. **零待机能耗**：平时与息屏时前摄 100% 断电、不与协处理器握手；仅灭屏前单次探测（~350ms，1~2 帧），检测完立即释放。
 3. **Demand Mode**：流生命周期完全跟随框架回调，探测答案带置信度（PRESENT 立即回 / 3 连 ABSENT 才判负 / 超时有事件判正），dwell 窗口（默认 60s）后协议级停流。
 4. **WebUI 控制台**：一屏式界面（横竖屏自适应），主开关、状态指标、立即测试、参数调节、实时日志（自动滚动）。
-5. **三重防护**：服务看护（supervisor）+ ADSP 崩溃熔断 + 开机失败自动回退（v1.9）。
+5. **三重防护**：服务看护（supervisor，单实例锁 + 退避重拉）+ ADSP 崩溃熔断 + 开机失败自动回退（bootloop guard）。
 6. **跨 ROM 兼容设计**：核心依赖 AOSP 契约 + vendor 固件（AON HAL/QSH），不绑定 ColorOS；底包 AON 服务净化在其他 ROM 上自动 no-op。
 
 ---
@@ -41,7 +41,7 @@
 2. 从 [Releases](https://github.com/futureharmony/Lenovo-TB522FU-Attention-KeepOn/releases) 下载最新 zip（或本地构建 `./build_zip.sh`）。
 3. 管理器 → 模块 → 本地安装 → 重启。
 
-**开机失败自动回退（v1.9）**：连续 3 次开机失败（卡死在 boot_completed 之前）时，模块自动禁用自身并在下次成功开机后还原全部 secure 设置；在管理器中重新启用模块即可恢复，无需重刷。
+**开机失败自动回退**：连续 3 次开机失败（卡死在 boot_completed 之前）时，模块自动禁用自身并在下次成功开机后还原全部 secure 设置；在管理器中重新启用模块即可恢复，无需重刷。
 
 ---
 
@@ -66,20 +66,55 @@ attention_ctrl log [n] | clear_log
 
 ## 🛠️ 技术规格
 
-- **设备**：联想拯救者 Y900 (TB522FU)；**系统**：ColorOS 16 / Android 14+ 移植版（vendor 固件保留即可）
-- **感知**：Camera 3 / OG0VE AON FDPRO（160x120 单色 ULP，QSH 通道直通 ADSP，不占用普通相机流）；推理引擎（EAI）跑在 ADSP Hexagon 主域。厂商固件另有 ADSP 低功耗岛（LPai island）执行路径，但存在构建期链接缺陷（`is_island=1` 即跨区取指 fault），故本模块终态配置 `is_island=0` 走主域——岛路径弃用是修复结论，不是设计取舍
+- **设备**：联想拯救者 Y900 (TB522FU)，Snapdragon 8 Elite；**系统**：ColorOS 16 移植版（**Android 16 / SDK 36**）—— 模块只依赖 AOSP `AttentionService` 契约（Android 14+）与保留的 vendor 固件，不绑定具体 ROM
+- **感知**：Camera 3 / OG0VE AON FDPRO —— 单色全局快门 ULP 传感器，QSH 通道直通 ADSP，**不占用普通相机流**（无 ISP 管线，CamX/CHI 路径恒返 `-38`）。运行模式 **480×360（`algoModeIdx=2`）**、`deliveryPerSec=15`；推理（EAI）跑在 ADSP Hexagon 主域
+- **为什么不用 160×120**：FDPRO 共暴露 3 个模式 —— `160x120`（`isIslandCapable=1`）/ `320x240` / `480x360`。`160×120` 是固件唯一标记"可进岛"的模式，也正是崩溃源：`is_island=1` 时模型走后处理 island 分支，跨执行域取指 fault（`PD_ERR: qsh_process : EX:qsh_process:0x4:AonCam_0:0x10000014`），触发 ADSP 每 5~10 s 自持重启并连带 Type-C/USB 掉线。本模块终态为 **`is_island=0` + 480×360** —— 岛路径弃用是修复结论，不是设计取舍
+- **配置修复范围**：`is_island` 归零覆盖 persist registry 中**全部 `nms_*` 模型**（`eod` / `fd_qqvga` / `fd_qvga` / `fd_360p` / `qrcode` / `hd`），开机修正 + 运行期漂移自检双重防线；任意一项漏改都会复发
 - **架构**：`aon_daemon.bin`（250ms 轮询 aon_cmd → aon_evt）+ 无头 APK（`:attention` 进程，specialUse FGS）+ service.sh/supervisor.sh + WebUI
 - **配置**：`/data/adb/tb522fu_attention/config.json`；**日志**：同目录 `attention.log`（自动轮转 800 行）
 - **回退**：`boot_fail_count` 计数 + `AUTO_DISABLED` 标志 + `/data/adb/service.d/tb522fu_rollback_cleanup.sh`（独立于模块启停状态）
+
+## 📚 技术文档
+
+本项目的取证与逆向过程完整落盘在 [`docs/`](docs/)（**先读 [`docs/README.md`](docs/README.md) 索引**）：
+
+| 文档 | 回答什么 |
+|---|---|
+| [`docs/PROJECT_HISTORY.md`](docs/PROJECT_HISTORY.md) | **项目总汇**：崩溃机制最终判决、修复与实测、原厂对照、**18 条已作废结论清单**、硬数据速查（地址 / SHA256 / 分区 / 参数语义） |
+| [`docs/PITFALLS.md`](docs/PITFALLS.md) | 逆向 / 取证时**哪些判据会骗人**（每条都曾静默给出错误结论） |
+| [`docs/github_module_vs_native_verdict_20260917.md`](docs/github_module_vs_native_verdict_20260917.md) | 联想原生方案与本模块的 12 项维度对照 + 实机 A/B 实验 + 模块缺陷清单 |
+| [`docs/zux_attentive_display_why_not_crash_verdict_20260917.md`](docs/zux_attentive_display_why_not_crash_verdict_20260917.md) | 原厂 ROM 为什么"不崩"：其产品路径里根本没有该分支的调用者 |
+| [`docs/zux_gd_vs_island0_verdict_20260917.md`](docs/zux_gd_vs_island0_verdict_20260917.md) | 原厂 GD（Tobii gaze）路线 vs 本模块 FD-Pro + `is_island=0` 路线的取舍 |
+| [`docs/aon_session_lost_verdict_20260917.md`](docs/aon_session_lost_verdict_20260917.md) | 一次自我纠错记录：`cid=-1` 与零事件是 Demand Mode 空闲态，**不是**故障 |
+| [`QSH_AON_FIRMWARE_BUG_REPORT.md`](QSH_AON_FIRMWARE_BUG_REPORT.md) | 提交给固件 / 平台侧的缺陷报告（fault 串与最小复现） |
+
+> 文档是**当时的取证快照**，被判"已作废"的结论按原样保留（用于说明错误怎么发生）。判断当前有效结论以 `PROJECT_HISTORY.md` §8 为准。
+
+---
 
 ## 📁 仓库结构
 
 ```
 magisk_module/        # 模块本体（含预编译 aon.apk / aon_daemon.bin / WebUI）
 app/                  # 无头 APK 源码（Kotlin）与构建脚本（app/tools 工具链不入库）
-aon_ulp_probe/        # AON 硬件探针与逆向笔记
-build_zip.sh          # 模块打包
+aon_ulp_probe/        # AON 硬件探针与逆向笔记（AIDL 还原、事件线格式破译）
+docs/                 # 技术文档：故障取证、方案判决、坑清单（索引见 docs/README.md）
+build_zip.sh          # 模块打包（版本号从 module.prop 单一来源读取）
 .github/workflows/    # CI：语法检查 + tag 自动发版
 ```
 
 > 注：`WorkBuddyKeyReuslt/`（本地分析工作区）与签名密钥 `app/aon_release.keystore` 不入库。
+
+---
+
+## 📝 版本
+
+当前版本以 [`magisk_module/module.prop`](magisk_module/module.prop) 的 `version` 为**唯一来源**
+（`build_zip.sh` 与 CI 均从此读取，不再硬编码）。近期变更：
+
+- **v1.8.1** —— 修复 `supervisor.sh` 重拉 daemon 时 IPC 路径与其余组件不一致导致的**控制面静默失联**（路径统一到 app files 目录）；`is_island` 修复范围由 4 个模型扩展到**全部 `nms_*` 模型**；supervisor 增加单实例锁（toybox 无 `flock`，用 `mkdir` 原子锁实现）与 **≥20 s 重拉退避**（AON 客户端是单占用资源，紧邻重拉必失败）。
+- **v1.8.0** —— `attention_ctrl` 命令改为完整协议 `state=start <camIdx> <srv> <mask> <algo> <w> <h> <dps> seq=<ms>`；此前发裸 `start` 与 daemon「内容变化才处理」的语义打不出配合，表现为 `test` 长期返回 `ABSENT`。
+- **v1.7** —— `is_island=0` 终态修复，关闭 ADSP 崩溃循环（根因见 `docs/PROJECT_HISTORY.md` §3）。
+- **v1.6** —— 强制 `algo=2 / 480×360`（非岛模式），修复回调解析错位，daemon 内置 SSC 断连自愈。
+
+> 发版：CI 校验 `tag` 必须与 `module.prop` 的 `version` **完全一致**（如 `v1.8.1`），否则 release job 失败。

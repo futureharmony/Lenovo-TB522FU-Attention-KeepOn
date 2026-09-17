@@ -36,9 +36,12 @@ REG="/mnt/vendor/persist/sensors/registry/registry"
 if [ -d "$REG" ]; then
     ISLAND_BAK="$CONF_DIR/backup/island_ORIG"
     mkdir -p "$ISLAND_BAK" 2>/dev/null
-    for _m in nms_eod nms_fd_qqvga nms_fd_qvga nms_qrcode; do
-        _f="$REG/qsh_camera_common.json.qsh_camera.tuning_params.$_m"
-        if [ -f "$_f" ] && [ ! -f "$ISLAND_BAK/$_m" ]; then
+    # 通配遍历全部 nms_* 模型（本 ROM 实有 6 个；历史版本硬编码 4 个，漏了
+    # nms_fd_360p / nms_hd）。此处为安装时快照，供回退/比对用；已有备份不覆盖。
+    for _f in "$REG"/qsh_camera_common.json.qsh_camera.tuning_params.nms_*; do
+        [ -f "$_f" ] || continue
+        _m="${_f##*tuning_params.}"
+        if [ ! -f "$ISLAND_BAK/$_m" ]; then
             cp -p "$_f" "$ISLAND_BAK/$_m" 2>/dev/null || true
         fi
     done
@@ -69,7 +72,7 @@ set_perm "$MODPATH/system/bin/attention_ctrl" 0 0 0755
 [ -f "$MODPATH/post-fs-data.sh" ] && set_perm "$MODPATH/post-fs-data.sh" 0 0 0755
 [ -f "$MODPATH/service.sh" ] && set_perm "$MODPATH/service.sh" 0 0 0755
 
-# 5.5 开机失败自动回退（bootloop guard, v1.9）
+# 5.5 开机失败自动回退（bootloop guard）
 #     - 计数/禁用逻辑内置于 post-fs-data.sh §0 与 service.sh §1.5；
 #     - 本步把清理脚本放入 /data/adb/service.d/ —— 该目录脚本独立于模块启停
 #       状态执行，模块被自动禁用后仍能还原 secure 设置；
