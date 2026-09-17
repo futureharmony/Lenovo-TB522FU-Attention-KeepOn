@@ -41,7 +41,7 @@
 
 1. 设备已解锁 BL，并装有 KernelSU / ReSukiSU / APatch / Magisk 等管理器。
 2. 从 [Releases](https://github.com/futureharmony/Lenovo-TB522FU-Attention-KeepOn/releases) 下载最新的 zip（也可自己构建：`./build_zip.sh`）。
-3. 管理器 → 模块 → 本地安装 → 重启即可。
+3. 管理器 → 模块 → 本地安装 → 重启即可。安装脚本会自动做**三项兼容性自检**（SystemUI 原厂注视组件 / island 配置 / AON 硬件通道），全部通过会显示"✓ 兼容性自检全部通过"；任一异常会在安装日志中明确警告——模块仍会安装，但注视功能可能无效。
 
 装好后到 **设置 → 显示与亮度 → 注视时不熄屏** 打开开关，就能用了。
 

@@ -49,6 +49,49 @@ if [ -d "$REG" ]; then
         ui_print "- [✓] island registry 原件已备份至 $ISLAND_BAK"
 fi
 
+# 2.6 安装期兼容性自检（不阻断安装，仅诊断——把"静默失效"变成"显式告知"）
+#     本模块依赖三件外部事实：SystemUI 原厂注视组件、SSC registry 的 is_island 键、
+#     高通 AON vendor HAL。任一不满足时明确警告，便于异底包用户定位问题。
+COMPAT_WARN=0
+ui_print "- 正在执行兼容性自检..."
+
+# a. SystemUI 原厂注视组件（overlay 的 config_defaultAttentionService 指向它；
+#    缺失时设置开关校验失败、attention binder 不发布 → 功能静默失效）
+if pm dump com.android.systemui 2>/dev/null | grep -q "keyguard.attention.AONAttentionService"; then
+    ui_print "- [✓] SystemUI 原厂注视组件存在"
+else
+    ui_print "! [警告] SystemUI 中未找到 keyguard.attention.AONAttentionService"
+    ui_print "!        当前底包可能不含原厂注视功能，开关可能无法保持打开"
+    COMPAT_WARN=$((COMPAT_WARN+1))
+fi
+
+# b. SSC registry 的 is_island 键（island=0 修正的作用对象；缺失说明固件
+#    tuning 格式不同——若该固件本无 island 缺陷则无碍，否则崩溃风险仍在）
+REG_HIT=$(grep -l "is_island" "$REG"/qsh_camera_common.json.qsh_camera.tuning_params.nms_* 2>/dev/null | head -n 1)
+if [ -n "$REG_HIT" ]; then
+    ui_print "- [✓] island registry 含 is_island 配置（修正目标在位）"
+else
+    ui_print "! [警告] registry 未找到 is_island 键，固件 tuning 格式可能不同"
+    ui_print "!        island 修正将无对象可改，请反馈固件版本以确认风险"
+    COMPAT_WARN=$((COMPAT_WARN+1))
+fi
+
+# c. 高通 AON vendor HAL（感知层唯一硬件通道）
+if service list 2>/dev/null | grep -q "vendor.qti.hardware.camera.aon.IAONService"; then
+    ui_print "- [✓] 高通 AON vendor HAL 正常注册"
+else
+    ui_print "! [警告] 未发现 AON vendor HAL（vendor.qti.hardware.camera.aon.IAONService）"
+    ui_print "!        硬件感知不可用，固件可能过旧/过新或经过深度裁剪"
+    COMPAT_WARN=$((COMPAT_WARN+1))
+fi
+
+if [ "$COMPAT_WARN" -gt 0 ]; then
+    ui_print "! 兼容性自检发现 $COMPAT_WARN 项异常：模块仍会安装，"
+    ui_print "! 但注视功能可能无效。请带本安装日志到 GitHub Issues 反馈。"
+else
+    ui_print "- [✓] 兼容性自检全部通过"
+fi
+
 if [ ! -f "$CONF_DIR/config.json" ]; then
     ui_print "- 正在初始化默认配置 (默认开启注视保护、日志默认关闭)..."
     echo "{\"enabled\": true, \"log_enabled\": false, \"installed_at\": \"$(date "+%Y-%m-%d %H:%M:%S")\"}" > "$CONF_DIR/config.json"
