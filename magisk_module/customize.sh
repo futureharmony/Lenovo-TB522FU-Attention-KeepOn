@@ -54,13 +54,45 @@ if [ ! -f "$CONF_DIR/config.json" ]; then
     echo "{\"enabled\": true, \"installed_at\": \"$(date "+%Y-%m-%d %H:%M:%S")\"}" > "$CONF_DIR/config.json"
 fi
 
-# 3. 同步资源至运行目录
-[ -f "$MODPATH/aon_frameworkres_overlay.apk" ] && cp -f "$MODPATH/aon_frameworkres_overlay.apk" "$CONF_DIR/aon_overlay.apk" 2>/dev/null
+# 3. 部署系统级 Framework-res 静态 RRO Overlay (供系统设置读取 config_defaultAttentionService)
+mkdir -p "$MODPATH/my_product/overlay" "$MODPATH/system/product/overlay" "$MODPATH/system/overlay" 2>/dev/null
+if [ -f "$MODPATH/aon_frameworkres_overlay.apk" ]; then
+    cp -f "$MODPATH/aon_frameworkres_overlay.apk" "$MODPATH/my_product/overlay/lwky.oplus.aon.frameworkres.overlay.product.apk" 2>/dev/null
+    cp -f "$MODPATH/aon_frameworkres_overlay.apk" "$MODPATH/system/product/overlay/lwky.oplus.aon.frameworkres.overlay.product.apk" 2>/dev/null
+    cp -f "$MODPATH/aon_frameworkres_overlay.apk" "$MODPATH/system/product/overlay/aon_frameworkres_overlay.apk" 2>/dev/null
+    cp -f "$MODPATH/aon_frameworkres_overlay.apk" "$MODPATH/system/overlay/aon_frameworkres_overlay.apk" 2>/dev/null
+    cp -f "$MODPATH/aon_frameworkres_overlay.apk" "$CONF_DIR/aon_overlay.apk" 2>/dev/null
+fi
 
-# 4. 安装/更新 futureharmony.tb522fu.aon 后台感知服务（无界面，控制走 WebUI）
+# 清理旧版 idmap 缓存，确保重启后由 post-fs-data 与 OMS 使用新 Overlay 生成
+rm -f /data/resource-cache/*aon* 2>/dev/null || true
+
+# 4. 安装 futureharmony.tb522fu.aon 后台感知服务应用
 if [ -f "$MODPATH/aon.apk" ]; then
-    ui_print "- 正在安装/更新后台感知服务（无界面 APK）..."
-    pm install -r "$MODPATH/aon.apk" >/dev/null 2>&1 || true
+    ui_print "- 正在安装后台感知服务应用..."
+    pm install -r -g "$MODPATH/aon.apk" >/dev/null 2>&1 || true
+fi
+
+# 4.5 同步初始化系统设置（AOSP + ColorOS 双表对齐 + 首选项直通）
+if [ "$(grep -o '"enabled"[[:space:]]*:[[:space:]]*true' "$CONF_DIR/config.json" 2>/dev/null)" ]; then
+    settings put secure adaptive_sleep 1 >/dev/null 2>&1 || true
+    settings put secure oplus_customize_smart_screen_off 1 >/dev/null 2>&1 || true
+    settings put system oplus_customize_smart_screen_off 1 >/dev/null 2>&1 || true
+    settings put secure tb522fu_aon_enabled 1 >/dev/null 2>&1 || true
+    settings put secure attention_service_component \
+        "futureharmony.tb522fu.aon/futureharmony.tb522fu.aon.AONAttentionService" >/dev/null 2>&1 || true
+
+    SETTINGS_PREF_DIR="/data/user/0/com.android.settings/shared_prefs"
+    if [ -d "$SETTINGS_PREF_DIR" ]; then
+        cat << 'EOF' > "$SETTINGS_PREF_DIR/keep_on_looking.xml"
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <boolean name="keep_on_looking" value="true" />
+</map>
+EOF
+        chmod 660 "$SETTINGS_PREF_DIR/keep_on_looking.xml" 2>/dev/null || true
+        chown system:system "$SETTINGS_PREF_DIR/keep_on_looking.xml" 2>/dev/null || true
+    fi
 fi
 
 # 5. 设置权限与 SELinux 上下文
@@ -87,7 +119,7 @@ if [ -f "$MODPATH/rollback_cleanup.sh" ]; then
 fi
 
 # Overlay APK 安全上下文对齐 (防止 system_app / PMS 拒绝访问)
-chcon u:object_r:system_file:s0 "$MODPATH/aon_frameworkres_overlay.apk" 2>/dev/null || true
+chcon -R u:object_r:system_file:s0 "$MODPATH/system" 2>/dev/null || true
 chcon u:object_r:system_file:s0 "$CONF_DIR/aon_overlay.apk" 2>/dev/null || true
 
 ui_print "***************************************************"

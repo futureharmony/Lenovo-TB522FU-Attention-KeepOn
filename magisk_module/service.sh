@@ -81,23 +81,39 @@ rm -f "$CONF_DIR/aon.pid" "$CONF_DIR/aon.lock" 2>/dev/null || true
 chmod 666 "$AON_DIR/aon_cmd" "$AON_DIR/aon_evt" 2>/dev/null || true
 
 # 4. SELinux 与权限保障
-if command -v ksud >/dev/null 2>&1; then
+for domain in untrusted_app priv_app system_app; do
     for rule in \
-        "allow untrusted_app hal_camera_default binder call" \
-        "allow untrusted_app hal_camera_default binder transfer" \
-        "allow untrusted_app hal_camera_default fd use"; do
-        ksud sepolicy patch "$rule" >/dev/null 2>&1 || true
+        "allow $domain hal_camera_default binder call" \
+        "allow $domain hal_camera_default binder transfer" \
+        "allow $domain hal_camera_default fd use"; do
+        if command -v ksud >/dev/null 2>&1; then
+            ksud sepolicy patch "$rule" >/dev/null 2>&1 || true
+        elif command -v magiskpolicy >/dev/null 2>&1; then
+            magiskpolicy --live "$rule" >/dev/null 2>&1 || true
+        fi
     done
-elif command -v magiskpolicy >/dev/null 2>&1; then
-    magiskpolicy --live \
-        "allow untrusted_app hal_camera_default binder call" \
-        "allow untrusted_app hal_camera_default binder transfer" \
-        "allow untrusted_app hal_camera_default fd use" >/dev/null 2>&1 || true
-fi
+done
 
 settings put global hidden_api_policy 2 >/dev/null 2>&1 || true
+if ! pm path futureharmony.tb522fu.aon >/dev/null 2>&1; then
+    if [ -f "$MODDIR/aon.apk" ]; then
+        pm install -r -g "$MODDIR/aon.apk" >/dev/null 2>&1 || true
+    fi
+fi
 pm grant futureharmony.tb522fu.aon android.permission.CAMERA >/dev/null 2>&1 || true
 pm grant futureharmony.tb522fu.aon android.permission.WRITE_SECURE_SETTINGS >/dev/null 2>&1 || true
+
+SETTINGS_PREF_DIR="/data/user/0/com.android.settings/shared_prefs"
+if [ -d "$SETTINGS_PREF_DIR" ]; then
+    cat << 'EOF' > "$SETTINGS_PREF_DIR/keep_on_looking.xml"
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <boolean name="keep_on_looking" value="true" />
+</map>
+EOF
+    chmod 660 "$SETTINGS_PREF_DIR/keep_on_looking.xml" 2>/dev/null || true
+    chown system:system "$SETTINGS_PREF_DIR/keep_on_looking.xml" 2>/dev/null || true
+fi
 
 # 5. 启动 Camera 3 AON 硬件守护进程 (单例后台，独占锁保护)
 if [ -f "$MODDIR/aon_daemon.bin" ]; then
@@ -116,13 +132,28 @@ pkill -9 -f "attention_ctrl daemon" 2>/dev/null || true
 # 7. 启动常驻感知与防息屏服务 (维持硬件注视续屏与系统设置同步)
 am start-foreground-service -n futureharmony.tb522fu.aon/.AONAttentionService >/dev/null 2>&1 || true
 
-# 7.5 Demand Mode 契约：component 必须指向我们的服务，framework 才会在熄屏超时
-#     时回调 onCheckAttention。不依赖 LSPosed hook（可能未启用），root 直接写。
+# 7.5 Demand Mode 契约与系统设置同步：
+#     - component 指向我们的服务，framework 才会在熄屏超时回调 onCheckAttention。
+#     - adaptive_sleep (AOSP 契约) + oplus_customize_smart_screen_off (ColorOS 设置项)
+#       同步写入 Secure 和 System 表，确保系统设置界面开关保持开启且不被重置。
 if [ "$(grep -o '"enabled"[[:space:]]*:[[:space:]]*true' "$CONF_FILE" 2>/dev/null)" ]; then
     settings put secure adaptive_sleep 1 2>/dev/null || true
+    settings put secure oplus_customize_smart_screen_off 1 2>/dev/null || true
+    settings put system oplus_customize_smart_screen_off 1 2>/dev/null || true
+    settings put secure tb522fu_aon_enabled 1 2>/dev/null || true
     settings put secure attention_service_component \
         "futureharmony.tb522fu.aon/futureharmony.tb522fu.aon.AONAttentionService" 2>/dev/null || true
+
+    # 7.6 框架 provider 绑定（真正决定"盯着屏幕是否息屏"的一步）：
+    #     ROM 的 AttentionManagerService 只认框架资源里的 provider，且用
+    #     MATCH_SYSTEM_ONLY 解析（普通 APK 不合格）；secure setting 只是镜像、本 ROM
+    #     不读。必须用 shell 钩子 cmd attention setTestableAttentionService 改写解析
+    #     目标（该路径不做 system-only 过滤）。覆盖是内存态 ⇒ 每次开机都要重绑，
+    #     运行期漂移由 supervisor.sh 兜底。详见 attention_ctrl 头部注释。
+    [ -x "$MODDIR/system/bin/attention_ctrl" ] && \
+        sh "$MODDIR/system/bin/attention_ctrl" bind >>"$LOG_FILE" 2>&1 || true
 fi
+
 
 # 8. 后台服务监督 + ADSP 崩溃风暴熔断（逻辑见 supervisor.sh）：
 #    - 保活：enabled 时 :attention 进程消失即重拉（Demand Mode 契约依赖）。

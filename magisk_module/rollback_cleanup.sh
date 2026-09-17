@@ -33,9 +33,11 @@ done
 [ "$(getprop sys.boot_completed)" = "1" ] || exit 0
 sleep 5
 
-# 1. 还原 secure 设置到模块部署前状态
+# 1. 还原 secure / system 设置到模块部署前状态
 settings delete secure attention_service_component >/dev/null 2>&1 || true
 settings put secure adaptive_sleep 0 >/dev/null 2>&1 || true
+settings put secure oplus_customize_smart_screen_off 0 >/dev/null 2>&1 || true
+settings put system oplus_customize_smart_screen_off 0 >/dev/null 2>&1 || true
 settings put secure tb522fu_aon_enabled 0 >/dev/null 2>&1 || true
 
 # 2. 清理运行期残留（模块 disable 后 supervisor 不会再拉起，但保险起见）

@@ -23,9 +23,14 @@ fi
 
 rm -rf "$OUT/obj"; mkdir -p "$OUT/obj" "$OUT/gen"
 
-# 1) link manifest (no resources)
+# 1) compile resources + link manifest
+mkdir -p "$OUT/compiled_res"
+"$BT/aapt2" compile --dir "$DIR/res" -o "$OUT/compiled_res/res.zip"
 "$BT/aapt2" link --manifest "$DIR/AndroidManifest.xml" \
+    -R "$OUT/compiled_res/res.zip" \
+    --auto-add-overlay \
     --min-sdk-version 31 --target-sdk-version 36 \
+    --java "$OUT/gen" \
     -I "$PLATFORM" -o "$OUT/base.apk"
 
 # 2) joint compile kotlin + java (xposed stubs)
@@ -54,6 +59,8 @@ fi
     --key-pass pass:aonkeep2026 --out "$OUT/aon.apk" "$OUT/aon.apk"
 
 echo "OK: $OUT/aon.apk"
+cp -f "$OUT/aon.apk" "$DIR/../magisk_module/aon.apk"
+echo "Synced to: $DIR/../magisk_module/aon.apk"
 
 # 6) optional install
 if [ "$1" = "install" ]; then

@@ -381,6 +381,7 @@
             }
 
             setChip("chip-svc", d.service_running, d.service_running ? ("pid " + (d.service_pid || "?")) : "未运行");
+            setChip("chip-bind", !!d.attention_bound, d.attention_bound ? "已绑定" : "未绑定");
             setChip("chip-stream", d.stream_registered, d.stream_registered ? "已注册" : "空闲");
             setChip("chip-screen", d.wakefulness === "Awake", d.wakefulness === "Awake" ? "亮屏" : (d.wakefulness === "Asleep" ? "熄屏" : (d.wakefulness || "-")));
             const cur = Number(d.battery_current_ua || 0);

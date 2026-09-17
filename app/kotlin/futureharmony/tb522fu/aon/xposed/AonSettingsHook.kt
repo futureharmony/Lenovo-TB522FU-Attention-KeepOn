@@ -46,14 +46,16 @@ class AonSettingsHook : IXposedHookLoadPackage {
                 }
             })
 
-            // Hook isChecked to directly reflect Settings.Secure.adaptive_sleep
+            // Hook isChecked to directly reflect Settings.Secure.adaptive_sleep or oplus_customize_smart_screen_off
             XposedHelpers.findAndHookMethod(kolClass, "isChecked", object : XC_MethodHook() {
                 override fun beforeHookedMethod(param: MethodHookParam) {
                     try {
                         val ctx = XposedHelpers.getObjectField(param.thisObject, "mContext") as? Context
                         if (ctx != null) {
-                            val value = Settings.Secure.getInt(ctx.contentResolver, "adaptive_sleep", 0)
-                            param.result = value == 1
+                            val v1 = Settings.Secure.getInt(ctx.contentResolver, "adaptive_sleep", 0)
+                            val v2 = Settings.Secure.getInt(ctx.contentResolver, "oplus_customize_smart_screen_off", 0)
+                            val v3 = Settings.System.getInt(ctx.contentResolver, "oplus_customize_smart_screen_off", 0)
+                            param.result = (v1 == 1 || v2 == 1 || v3 == 1)
                         }
                     } catch (t: Throwable) {
                         XposedBridge.log(t)
@@ -69,8 +71,17 @@ class AonSettingsHook : IXposedHookLoadPackage {
                             val checked = param.args[0] as Boolean
                             val ctx = XposedHelpers.getObjectField(param.thisObject, "mContext") as? Context
                             if (ctx != null) {
-                                Settings.Secure.putInt(ctx.contentResolver, "adaptive_sleep", if (checked) 1 else 0)
-                                Settings.Secure.putInt(ctx.contentResolver, "oplus_customize_smart_screen_off", if (checked) 1 else 0)
+                                val intVal = if (checked) 1 else 0
+                                Settings.Secure.putInt(ctx.contentResolver, "adaptive_sleep", intVal)
+                                Settings.Secure.putInt(ctx.contentResolver, "oplus_customize_smart_screen_off", intVal)
+                                try {
+                                    Settings.System.putInt(ctx.contentResolver, "oplus_customize_smart_screen_off", intVal)
+                                } catch (_: Throwable) {
+                                }
+                                try {
+                                    Settings.Secure.putString(ctx.contentResolver, "tb522fu_aon_enabled", if (checked) "1" else "0")
+                                } catch (_: Throwable) {
+                                }
                                 try {
                                     val sp = XposedHelpers.getObjectField(param.thisObject, "mKeepOnLookingSP") as? SharedPreferences
                                     sp?.edit()?.putBoolean("keep_on_looking", checked)?.apply()
@@ -85,21 +96,37 @@ class AonSettingsHook : IXposedHookLoadPackage {
                     }
                 })
 
-            // Hook availabilityStatus
-            XposedHelpers.findAndHookMethod(kolClass, "availabilityStatus", Context::class.java,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        param.result = true
-                    }
-                })
+            // Hook availabilityStatus / getAvailabilityStatus (0 = AVAILABLE)
+            try {
+                XposedHelpers.findAndHookMethod(kolClass, "availabilityStatus", Context::class.java,
+                    object : XC_MethodHook() {
+                        override fun beforeHookedMethod(param: MethodHookParam) {
+                            param.result = 0
+                        }
+                    })
+            } catch (_: Throwable) {
+            }
+
+            try {
+                XposedHelpers.findAndHookMethod(kolClass, "getAvailabilityStatus",
+                    object : XC_MethodHook() {
+                        override fun beforeHookedMethod(param: MethodHookParam) {
+                            param.result = 0
+                        }
+                    })
+            } catch (_: Throwable) {
+            }
 
             // Hook isKeepOnLookingSupport
-            XposedHelpers.findAndHookMethod(kolClass, "isKeepOnLookingSupport", Context::class.java,
-                object : XC_MethodHook() {
-                    override fun beforeHookedMethod(param: MethodHookParam) {
-                        param.result = true
-                    }
-                })
+            try {
+                XposedHelpers.findAndHookMethod(kolClass, "isKeepOnLookingSupport", Context::class.java,
+                    object : XC_MethodHook() {
+                        override fun beforeHookedMethod(param: MethodHookParam) {
+                            param.result = true
+                        }
+                    })
+            } catch (_: Throwable) {
+            }
 
             XposedBridge.log("$TAG: KeepOnLookingController successfully hooked!")
         } catch (t: Throwable) {

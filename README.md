@@ -42,11 +42,11 @@
 
 ## 🌟 核心特性
 
-1. **原生 AOSP 架构接管**：直接接入 `AttentionManagerService` 与 `PowerManagerService`，让系统【设置 - 显示与亮度 - 注视时不熄屏】真正生效，解决移植版缺少 Priv-App 特权导致的绑定断链。
+1. **原生 AOSP 架构接管**：把框架的 provider 真正指向本模块的无头服务，让系统【设置 - 显示与亮度 - 注视时不熄屏】不再空转 —— 灭屏超时前框架回调 `onCheckAttention`，本模块用 AON 硬件感知作答（在场 → 续亮）。
 2. **零待机能耗**：平时与息屏时前摄 100% 断电、不与协处理器握手；仅灭屏前单次探测（~350ms，1~2 帧），检测完立即释放。
 3. **Demand Mode**：流生命周期完全跟随框架回调，探测答案带置信度（PRESENT 立即回 / 3 连 ABSENT 才判负 / 超时有事件判正），dwell 窗口（默认 60s）后协议级停流。
-4. **WebUI 控制台**：一屏式界面（横竖屏自适应），主开关、状态指标、立即测试、参数调节、实时日志（自动滚动）。
-5. **三重防护**：服务看护（supervisor，单实例锁 + 退避重拉）+ ADSP 崩溃熔断 + 开机失败自动回退（bootloop guard）。
+4. **WebUI 控制台**：一屏式界面（横竖屏自适应），主开关、状态指标（含**框架契约绑定态**）、立即测试、参数调节、实时日志（自动滚动）。
+5. **四重防护**：服务看护（supervisor，单实例锁 + 退避重拉）+ 框架 provider 漂移兜底（5 分钟核一次自动重绑）+ ADSP 崩溃熔断 + 开机失败自动回退（bootloop guard）。
 6. **跨 ROM 兼容设计**：核心依赖 AOSP 契约 + vendor 固件（AON HAL/QSH），不绑定 ColorOS；底包 AON 服务净化在其他 ROM 上自动 no-op。
 
 ---
@@ -71,9 +71,10 @@
 
 ### 命令行（root）
 ```bash
-attention_ctrl status       # 状态 JSON（服务/流/配置）
+attention_ctrl status       # 状态 JSON（服务/流/配置/框架绑定态）
 attention_ctrl on|off|toggle
 attention_ctrl test         # 单次探测并输出耗时与结果
+attention_ctrl bind|unbind  # 把框架 provider 指向/解除指向本服务
 attention_ctrl set <json>   # 修改配置（preserve-merge）
 attention_ctrl log [n] | clear_log
 ```
@@ -89,6 +90,27 @@ attention_ctrl log [n] | clear_log
 - **架构**：`aon_daemon.bin`（250ms 轮询 aon_cmd → aon_evt）+ 无头 APK（`:attention` 进程，specialUse FGS）+ service.sh/supervisor.sh + WebUI
 - **配置**：`/data/adb/tb522fu_attention/config.json`；**日志**：同目录 `attention.log`（自动轮转 800 行）
 - **回退**：`boot_fail_count` 计数 + `AUTO_DISABLED` 标志 + `/data/adb/service.d/tb522fu_rollback_cleanup.sh`（独立于模块启停状态）
+
+### 🔌 框架接入：为什么"开关开着却照样息屏"（v1.8.5 定案）
+
+这是本模块最容易静默失效的一环，链路与判据如下（全部在真机实测确认）：
+
+| 环节 | 事实 |
+|---|---|
+| 谁决定 provider | `AttentionManagerService` 只认框架资源 `config_defaultAttentionService`（本 ROM = 自家 `com.android.systemui/com.oplusos.systemui.keyguard.attention.AONAttentionService`），解析时带 **`PackageManager.MATCH_SYSTEM_ONLY`** ⇒ 普通安装（`/data/app`）的 APK **永远不合格** |
+| 候选服务的硬门槛 | 框架解析到候选后校验 `ServiceInfo.permission == android.permission.BIND_ATTENTION_SERVICE`（严格相等）。不等即 `Slog.e` 丢弃该服务，**服务彻底不可用**：<br>`E AttentionManagerService: Service ComponentInfo{…} should require android.permission.BIND_ATTENTION_SERVICE permission. Found null permission`<br>⚠️ 只是**声明**该权限即可，不需要真的持有它（框架天然持有），**也不需要 system 应用身份** —— 前提是走下面这条解析路径 |
+| `attention_service_component` secure setting | **本 ROM 不读**。写入后 `PMS.getAttentionServicePackageName()` 仍返回 `com.android.systemui`（实测）。它只是镜像，不是生效开关 |
+| 可用的改写通路 | shell 钩子 `cmd attention setTestableAttentionService <pkg>` —— 该路径以 **`GET_META_DATA`** 解析（不做 system-only 过滤），普通 APK 可用；写入后 `dumpsys attention` 的 `Resolved component` 立即变为本模块服务。**唯一硬性前提仍是 APK 声明 BIND_ATTENTION_SERVICE** |
+| 调用预算 | `PowerManagerService.AttentionDetector` 在**预调光前 2s**发起 `checkAttention(mPreDimCheckDurationMillis + mEffectivePostDimTimeoutMillis = 2000+3000 = 5000ms)`；拿到 `ATTENTION_SUCCESS_PRESENT` 才续亮 |
+| 附加门禁 | 锁屏显示且未被遮挡（`isKeyguardShowingAndNotOccluded()`）时**不发起检查** —— 锁屏状态下本功能按 AOSP 设计不生效 |
+
+**因此模块的处理**：APK 声明 BIND 权限（`app/AndroidManifest.xml`）→ 开机 `service.sh` §7.6 用 shell 钩子把 provider 指向本服务 → `supervisor.sh` 每 5 分钟核验一次（该覆盖是 `system_server` 内存态，任何一次 system_server 重启都会回落 ROM 默认 provider）。WebUI 顶部的 **「契约」chip** 就是这条链路的实时状态；`attention_bound=false` 时盯着屏幕也会息屏。
+
+自查一行：
+```bash
+su -c 'attention_ctrl status | grep attention_bound'      # 期望 true
+su -c 'attention_ctrl bind'                               # 未绑定则重绑
+```
 
 ## 📚 技术文档
 

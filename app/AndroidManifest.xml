@@ -23,8 +23,15 @@
 
         <!-- 纯后台服务：无任何界面组件、非 Xposed 模块。
              framework 通过 attention_service_component 绑定本服务（Demand Mode 契约）。 -->
+        <!-- android:permission 是框架硬性门槛：AttentionManagerService 解析候选服务后
+             会校验 ServiceInfo.permission == BIND_ATTENTION_SERVICE，不匹配即 Slog.e
+             "…should require android.permission.BIND_ATTENTION_SERVICE permission.
+             Found null permission" 并丢弃该服务（服务就此永不可用）。
+             声明它不等于需要持有它——框架作为 system_server 天然持有。
+             注意：这里只校验“声明”，app 无需为系统应用。 -->
         <service
             android:name="futureharmony.tb522fu.aon.AONAttentionService"
+            android:permission="android.permission.BIND_ATTENTION_SERVICE"
             android:foregroundServiceType="specialUse"
             android:exported="true"
             android:process=":attention"

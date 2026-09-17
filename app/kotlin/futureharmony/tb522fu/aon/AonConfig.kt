@@ -275,10 +275,19 @@ class AonConfig {
     fun setMasterEnabled(ctx: Context, enabled: Boolean): Boolean {
         masterEnabled = enabled
         return try {
+            val v = if (enabled) 1 else 0
             Settings.Secure.putString(ctx.contentResolver, ENABLED_KEY, if (enabled) "1" else "0")
-            // keep the legacy adaptive_sleep key in lockstep (system settings toggle)
+            // keep both adaptive_sleep and ColorOS oplus_customize_smart_screen_off in lockstep
             try {
-                Settings.Secure.putInt(ctx.contentResolver, "adaptive_sleep", if (enabled) 1 else 0)
+                Settings.Secure.putInt(ctx.contentResolver, "adaptive_sleep", v)
+            } catch (_: Throwable) {
+            }
+            try {
+                Settings.Secure.putInt(ctx.contentResolver, "oplus_customize_smart_screen_off", v)
+            } catch (_: Throwable) {
+            }
+            try {
+                Settings.System.putInt(ctx.contentResolver, "oplus_customize_smart_screen_off", v)
             } catch (_: Throwable) {
             }
             true

@@ -96,3 +96,37 @@ if [ -d "$REG" ]; then
 else
     echo "[$(date '+%F %T')] WARN: persist registry not mounted after 20s, island fix skipped" >> "$ISLAND_LOG" 2>/dev/null
 fi
+
+##########################################################################################
+# 4. 预制 Framework-res 静态 RRO idmap 与 ColorOS 系统设置首选项 (早于 system_server 启动)
+#    确保 OverlayManagerService 与 Settings 启动时即可命中有效 idmap 与 keep_on_looking 配置
+##########################################################################################
+mkdir -p /data/resource-cache 2>/dev/null
+chmod 771 /data/resource-cache 2>/dev/null
+chown system:system /data/resource-cache 2>/dev/null
+
+for idmap_name in "my_product@overlay@lwky.oplus.aon.frameworkres.overlay.product.apk@idmap" "product@overlay@lwky.oplus.aon.frameworkres.overlay.product.apk@idmap" "product@overlay@aon_frameworkres_overlay.apk@idmap"; do
+    TARGET_OVERLAY="/product/overlay/lwky.oplus.aon.frameworkres.overlay.product.apk"
+    [ -f "$TARGET_OVERLAY" ] || TARGET_OVERLAY="/product/overlay/aon_frameworkres_overlay.apk"
+    idmap2 create --target-apk-path /system/framework/framework-res.apk \
+        --overlay-apk-path "$TARGET_OVERLAY" \
+        --idmap-path "/data/resource-cache/$idmap_name" \
+        --policy product --policy system 2>/dev/null || true
+    if [ -f "/data/resource-cache/$idmap_name" ]; then
+        chmod 644 "/data/resource-cache/$idmap_name" 2>/dev/null
+        chown system:system "/data/resource-cache/$idmap_name" 2>/dev/null
+    fi
+done
+
+SETTINGS_PREF_DIR="/data/user/0/com.android.settings/shared_prefs"
+if [ -d "$SETTINGS_PREF_DIR" ]; then
+    cat << 'EOF' > "$SETTINGS_PREF_DIR/keep_on_looking.xml"
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <boolean name="keep_on_looking" value="true" />
+</map>
+EOF
+    chmod 660 "$SETTINGS_PREF_DIR/keep_on_looking.xml" 2>/dev/null || true
+    chown system:system "$SETTINGS_PREF_DIR/keep_on_looking.xml" 2>/dev/null || true
+fi
+

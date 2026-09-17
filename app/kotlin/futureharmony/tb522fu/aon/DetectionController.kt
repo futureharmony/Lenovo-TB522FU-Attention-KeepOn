@@ -28,6 +28,7 @@ class DetectionController(
 
     private var screenWakeLock: PowerManager.WakeLock? = null
     private var lastPokeAt = 0L
+    private var wakeLockLogged = false
 
     private val watchdog = object : Runnable {
         override fun run() {
@@ -176,7 +177,12 @@ class DetectionController(
                 ).apply { setReferenceCounted(false) }
             }
             screenWakeLock?.acquire(10_000) // Hold for 10s per pulse, renewed continuously while present
-            AonLog.i(TAG, "Screen keep-on: WakeLock ACTIVE (preventing dim/sleep)")
+            // Log on transition only: this runs once per AON event (~3-10/s) and used to
+            // flood aon.log with identical lines, hiding the real log.
+            if (!wakeLockLogged) {
+                wakeLockLogged = true
+                AonLog.i(TAG, "Screen keep-on: WakeLock ACTIVE (fallback; framework contract is primary)")
+            }
         } catch (t: Throwable) {
             AonLog.w(TAG, "acquireScreenWakeLock error: ${t.message}")
         }
@@ -188,7 +194,10 @@ class DetectionController(
             screenWakeLock?.let { wl ->
                 if (wl.isHeld) {
                     wl.release()
-                    AonLog.i(TAG, "Screen keep-on: WakeLock RELEASED (user absent, timeout resumed)")
+                    if (wakeLockLogged) {
+                        wakeLockLogged = false
+                        AonLog.i(TAG, "Screen keep-on: WakeLock RELEASED (user absent, timeout resumed)")
+                    }
                 }
             }
         } catch (_: Throwable) {

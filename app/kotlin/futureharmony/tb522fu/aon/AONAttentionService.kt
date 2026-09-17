@@ -34,6 +34,8 @@ class AONAttentionService : AttentionService() {
     private lateinit var config: AonConfig
     private var controller: DetectionController? = null
     private var settingsObserver: ContentObserver? = null
+    private var oplusSecureObserver: ContentObserver? = null
+    private var oplusSystemObserver: ContentObserver? = null
     private var enabledObserver: ContentObserver? = null
     private var screenReceiver: BroadcastReceiver? = null
     private var moduleConfObserver: FileObserver? = null
@@ -41,6 +43,8 @@ class AONAttentionService : AttentionService() {
 
     private var lastScreenState = false
     private var lastSettingVal = -1
+    private var lastAdaptiveSleepVal = -1
+    private var lastOplusVal = -1
     private var lastModuleEnabled: Boolean? = null
     private var staleStreamCleared = false
 
@@ -127,6 +131,33 @@ class AONAttentionService : AttentionService() {
             settingsObserver = obs
         } catch (t: Throwable) {
             AonLog.w("SVC", "registerContentObserver failed: ${t.message}")
+        }
+
+        // 1b. ColorOS Settings.Secure & Settings.System oplus_customize_smart_screen_off observers
+        try {
+            val obs = object : ContentObserver(handler) {
+                override fun onChange(selfChange: Boolean) {
+                    AonLog.i("SVC", "oplus_customize_smart_screen_off (secure) setting changed")
+                    syncState()
+                }
+            }
+            contentResolver.registerContentObserver(Settings.Secure.getUriFor("oplus_customize_smart_screen_off"), false, obs)
+            oplusSecureObserver = obs
+        } catch (t: Throwable) {
+            AonLog.w("SVC", "registerContentObserver oplus secure failed: ${t.message}")
+        }
+
+        try {
+            val obs = object : ContentObserver(handler) {
+                override fun onChange(selfChange: Boolean) {
+                    AonLog.i("SVC", "oplus_customize_smart_screen_off (system) setting changed")
+                    syncState()
+                }
+            }
+            contentResolver.registerContentObserver(Settings.System.getUriFor("oplus_customize_smart_screen_off"), false, obs)
+            oplusSystemObserver = obs
+        } catch (t: Throwable) {
+            AonLog.w("SVC", "registerContentObserver oplus system failed: ${t.message}")
         }
 
         // 2. Module master switch (tb522fu_aon_enabled) — also observed by AonConfig;
@@ -229,11 +260,55 @@ class AONAttentionService : AttentionService() {
 
     @Synchronized
     private fun syncState() {
-        val settingVal = try {
-            Settings.Secure.getInt(contentResolver, "adaptive_sleep", 1)
+        val sAdaptiveSleep = try {
+            Settings.Secure.getInt(contentResolver, "adaptive_sleep")
         } catch (_: Throwable) {
-            1
+            -1
         }
+        val sOplusSecure = try {
+            Settings.Secure.getInt(contentResolver, "oplus_customize_smart_screen_off")
+        } catch (_: Throwable) {
+            -1
+        }
+        val sOplusSystem = try {
+            Settings.System.getInt(contentResolver, "oplus_customize_smart_screen_off")
+        } catch (_: Throwable) {
+            -1
+        }
+
+        // Detect if ColorOS switch changed or AOSP switch changed
+        val currentOplus = if (sOplusSecure != -1) sOplusSecure else sOplusSystem
+        val settingVal: Int = when {
+            currentOplus != -1 && currentOplus != lastOplusVal && lastOplusVal != -1 -> {
+                // ColorOS switch was explicitly toggled by user
+                currentOplus
+            }
+            sAdaptiveSleep != -1 && sAdaptiveSleep != lastAdaptiveSleepVal && lastAdaptiveSleepVal != -1 -> {
+                // AOSP / WebUI / attention_ctrl was toggled
+                sAdaptiveSleep
+            }
+            currentOplus == 1 || sAdaptiveSleep == 1 -> 1
+            currentOplus == 0 || sAdaptiveSleep == 0 -> 0
+            else -> 1
+        }
+
+        lastAdaptiveSleepVal = if (sAdaptiveSleep != -1) sAdaptiveSleep else settingVal
+        lastOplusVal = if (currentOplus != -1) currentOplus else settingVal
+
+        // Keep both keys in sync across secure and system
+        try {
+            if (sAdaptiveSleep != settingVal) {
+                Settings.Secure.putInt(contentResolver, "adaptive_sleep", settingVal)
+            }
+            if (sOplusSecure != settingVal) {
+                Settings.Secure.putInt(contentResolver, "oplus_customize_smart_screen_off", settingVal)
+            }
+            if (sOplusSystem != settingVal) {
+                Settings.System.putInt(contentResolver, "oplus_customize_smart_screen_off", settingVal)
+            }
+        } catch (_: Throwable) {
+        }
+
         val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
         val screenInteractive = pm == null || pm.isInteractive
         val masterEnabled = readModuleEnabled()
@@ -242,8 +317,8 @@ class AONAttentionService : AttentionService() {
         if (settingVal != lastSettingVal || screenInteractive != lastScreenState ||
             masterEnabled != lastModuleEnabled
         ) {
-            AonLog.i("SVC", "syncState: adaptive_sleep=$settingVal, screenOn=$screenInteractive" +
-                ", moduleEnabled=$masterEnabled, secureEnabled=$secureEnabled")
+            AonLog.i("SVC", "syncState: settingVal=$settingVal (adaptive_sleep=$sAdaptiveSleep, oplus=$currentOplus)" +
+                ", screenOn=$screenInteractive, moduleEnabled=$masterEnabled, secureEnabled=$secureEnabled")
             lastSettingVal = settingVal
             lastScreenState = screenInteractive
             lastModuleEnabled = masterEnabled
@@ -309,6 +384,8 @@ class AONAttentionService : AttentionService() {
     override fun onDestroy() {
         AonLog.i("SVC", "service destroyed")
         settingsObserver?.let { try { contentResolver.unregisterContentObserver(it) } catch (_: Throwable) {} }
+        oplusSecureObserver?.let { try { contentResolver.unregisterContentObserver(it) } catch (_: Throwable) {} }
+        oplusSystemObserver?.let { try { contentResolver.unregisterContentObserver(it) } catch (_: Throwable) {} }
         enabledObserver?.let { try { contentResolver.unregisterContentObserver(it) } catch (_: Throwable) {} }
         screenReceiver?.let { try { unregisterReceiver(it) } catch (_: Throwable) {} }
         try { moduleConfObserver?.stopWatching() } catch (_: Throwable) {}

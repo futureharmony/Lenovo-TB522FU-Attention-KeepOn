@@ -11,6 +11,9 @@
 #    state=stop 无效，唯一停法 = 客户端进程死亡。这正是曾造成一夜 80% 掉电的
 #    故障形态（ADSP 反复重载 29MB 固件 + USB/UCSI 复位 + ToF 紊乱唤醒手势服务）。
 #    熔断后 10 分钟冷静期内不重拉，防止"重拉→再风暴"的功耗循环。
+# 4. 框架 provider 漂移兜底（每 5 分钟）：cmd attention setTestableAttentionService
+#    是 system_server 的内存态，重启即回落 ROM 默认 provider（SystemUI，本 ROM 上
+#    不工作）⇒ 静默重绑，否则表现为"开关在但盯着屏幕仍然息屏"。
 #
 # ── IPC 路径：必须与 service.sh §3 的 AON_DIR 保持一致 ──────────────────────────
 #    历史事故（≤ v1.8.0）：本文件用 CONF_DIR（/data/adb/tb522fu_attention/），而
@@ -38,6 +41,7 @@ RESPAWN_MIN_GAP=20          # daemon 最小重拉间隔（秒）：AON 客户端
 BASE_CRASH=0
 FIRST=1
 LAST_RESPAWN=0
+TICK=0                      # 主循环计数：框架 provider 漂移核验按此节流（见循环内）
 
 log() { echo "[$(date '+%F %T')] $1" >> "$LOG" 2>/dev/null || true; }
 
@@ -89,6 +93,7 @@ log "[SUPERVISOR] v3 started (pid=$$, cmd=$CMD_FILE)"
 
 while true; do
     sleep 15
+    TICK=$((TICK + 1))
 
     EN=$(sed -n 's/.*"enabled"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p' "$CONF" 2>/dev/null)
     [ "$EN" != "false" ] || continue
@@ -126,6 +131,36 @@ while true; do
        ! pidof "$PKG" >/dev/null 2>&1; then
         am start-foreground-service -n "$PKG/.AONAttentionService" >/dev/null 2>&1 || true
         log "[SUPERVISOR] attention service respawned"
+    fi
+
+    # ---- 契约与设置巡检（防被系统静默重置）----
+    if [ "$EN" = "true" ]; then
+        _as=$(settings get secure adaptive_sleep 2>/dev/null)
+        _os=$(settings get secure oplus_customize_smart_screen_off 2>/dev/null)
+        _cp=$(settings get secure attention_service_component 2>/dev/null)
+        if [ "$_as" != "1" ] || [ "$_os" != "1" ] || [ -z "$_cp" ] || [ "$_cp" = "null" ]; then
+            settings put secure adaptive_sleep 1 2>/dev/null || true
+            settings put secure oplus_customize_smart_screen_off 1 2>/dev/null || true
+            settings put system oplus_customize_smart_screen_off 1 2>/dev/null || true
+            settings put secure tb522fu_aon_enabled 1 2>/dev/null || true
+            settings put secure attention_service_component "$PKG/$PKG.AONAttentionService" 2>/dev/null || true
+        fi
+    fi
+
+    # ---- 框架 provider 漂移兜底（每 20 tick ≈5 分钟核一次）----
+    # cmd attention setTestableAttentionService 只是 system_server 的内存态，
+    # 任何一次 system_server 重启都会回落 ROM 默认 provider（本 ROM = SystemUI 的
+    # AONAttentionService，实测不工作），表现是"设置开关还在但盯着屏幕照样息屏"。
+    # 频率取 5 分钟：每次核验都要 spawn 一个 app_process（cmd），不宜每 15s 一次。
+    if [ "$EN" = "true" ] && [ $((TICK % 20)) -eq 1 ]; then
+        _bc=$(cmd attention getAttentionServiceComponent 2>/dev/null | head -n1 | tr -d '\r')
+        case "$_bc" in
+            "$PKG"/*) ;;
+            *)
+                cmd attention setTestableAttentionService "$PKG" >/dev/null 2>&1 || true
+                log "[SUPERVISOR] framework provider drifted ('${_bc:-none}') -> rebind to $PKG"
+                ;;
+        esac
     fi
 
     # ---- daemon 保温（is_island=0 下未注册 ≈0 功耗；死了重拉，不注册）----
